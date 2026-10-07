@@ -1,0 +1,595 @@
+name: Build Clean Padavan - Xiaomi Mi 4A 100M
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  TZ: Asia/Shanghai
+
+jobs:
+  build:
+    name: MI-4A-100M / hanwckf rt-n56u
+    runs-on: ubuntu-22.04
+
+    steps:
+
+      # ==========================================================
+      # 1. Install build dependencies
+      # ==========================================================
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -eux
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            unzip \
+            libtool-bin \
+            curl \
+            cmake \
+            gperf \
+            gawk \
+            flex \
+            bison \
+            nano \
+            xxd \
+            fakeroot \
+            kmod \
+            cpio \
+            git \
+            python3-docutils \
+            gettext \
+            automake \
+            autopoint \
+            texinfo \
+            build-essential \
+            help2man \
+            pkg-config \
+            zlib1g-dev \
+            libgmp3-dev \
+            libmpc-dev \
+            libmpfr-dev \
+            libncurses5-dev \
+            libltdl-dev \
+            wget \
+            libc-dev-bin
+
+      # ==========================================================
+      # 2. Clone ONLY hanwckf/rt-n56u
+      #
+      # This is the actual Padavan source base.
+      # ==========================================================
+      - name: Clone hanwckf Padavan
+        shell: bash
+        run: |
+          set -eux
+
+          git clone \
+            --depth=1 \
+            https://github.com/hanwckf/rt-n56u.git \
+            rt-n56u
+
+          cd rt-n56u
+
+          echo "=================================================="
+          echo "hanwckf/rt-n56u revision"
+          echo "=================================================="
+
+          git log -1 --format='%H%n%ci%n%s'
+
+      # ==========================================================
+      # 3. Import ONLY Xiaomi Mi 4A 100M hardware definitions
+      #
+      # Source:
+      # yuos-bit/Padavan
+      #
+      # We DO NOT use yuos-bit as the firmware source.
+      # We only take:
+      #
+      #   board.h
+      #   board.mk
+      #   kernel-3.4.x.config
+      #
+      # These are the hardware-specific definitions.
+      # ==========================================================
+      - name: Import MI-4A-100M hardware support
+        shell: bash
+        run: |
+          set -eux
+
+          cd rt-n56u
+
+          BOARD_DIR="trunk/configs/boards/MI-4A-100M"
+
+          mkdir -p "${BOARD_DIR}"
+
+          BASE_URL="https://raw.githubusercontent.com/yuos-bit/Padavan/master/trunk/configs/boards/MI-4A-100M"
+
+          curl -fL \
+            "${BASE_URL}/board.h" \
+            -o "${BOARD_DIR}/board.h"
+
+          curl -fL \
+            "${BASE_URL}/board.mk" \
+            -o "${BOARD_DIR}/board.mk"
+
+          curl -fL \
+            "${BASE_URL}/kernel-3.4.x.config" \
+            -o "${BOARD_DIR}/kernel-3.4.x.config"
+
+          echo "=================================================="
+          echo "Imported MI-4A-100M hardware files"
+          echo "=================================================="
+
+          ls -lh "${BOARD_DIR}"
+
+      # ==========================================================
+      # 4. Verify the imported hardware definition
+      # ==========================================================
+      - name: Verify MI-4A-100M hardware
+        shell: bash
+        run: |
+          set -eux
+
+          cd rt-n56u
+
+          BOARD_DIR="trunk/configs/boards/MI-4A-100M"
+
+          test -f "${BOARD_DIR}/board.h"
+          test -f "${BOARD_DIR}/board.mk"
+          test -f "${BOARD_DIR}/kernel-3.4.x.config"
+
+          grep -q 'MI-4A-100M' \
+            "${BOARD_DIR}/board.h"
+
+          grep -q 'CONFIG_RALINK_MT7628=y' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
+
+          grep -q 'CONFIG_RT2880_DRAM_64M=y' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
+
+          grep -q 'BOARD_GPIO_BTN_RESET' \
+            "${BOARD_DIR}/board.h"
+
+          grep -q 'BOARD_GPIO_LED_WIFI' \
+            "${BOARD_DIR}/board.h"
+
+          grep -q 'BOARD_GPIO_LED_POWER' \
+            "${BOARD_DIR}/board.h"
+
+          echo "MI-4A-100M hardware definition verified."
+
+      # ==========================================================
+      # 5. Create MINIMAL configuration
+      #
+      # IMPORTANT:
+      #
+      # We use hanwckf's own MI-NANO MT7628 template as the
+      # configuration skeleton instead of copying yuos-bit's
+      # 242-line MI-4A-100M configuration.
+      #
+      # Then only change the board/product ID.
+      #
+      # This keeps the configuration much closer to hanwckf's
+      # native configuration style.
+      # ==========================================================
+      - name: Create clean MI-4A-100M configuration
+        shell: bash
+        run: |
+          set -eux
+
+          cd rt-n56u
+
+          TEMPLATE="trunk/configs/templates/MI-NANO.config"
+          CLEAN="trunk/configs/templates/MI-4A-100M.config"
+
+          test -f "${TEMPLATE}"
+
+          cp "${TEMPLATE}" "${CLEAN}"
+
+          sed -i \
+            's/CONFIG_FIRMWARE_PRODUCT_ID="MI-NANO"/CONFIG_FIRMWARE_PRODUCT_ID="MI-4A-100M"/' \
+            "${CLEAN}"
+
+          echo "=================================================="
+          echo "Base configuration:"
+          echo "hanwckf MI-NANO MT7628 template"
+          echo "=================================================="
+
+          grep '^CONFIG_' "${CLEAN}"
+
+      # ==========================================================
+      # 6. Remove unnecessary optional components
+      #
+      # We explicitly disable optional packages which are not
+      # required by the router.
+      #
+      # The actual kernel hardware configuration remains entirely
+      # in MI-4A-100M/kernel-3.4.x.config.
+      # ==========================================================
+      - name: Apply clean configuration
+        shell: bash
+        run: |
+          set -eux
+
+          cd rt-n56u
+
+          CONFIG="trunk/configs/templates/MI-4A-100M.config"
+
+          # ------------------------------------------------------
+          # No USB
+          # ------------------------------------------------------
+          sed -i \
+            's/^CONFIG_FIRMWARE_ENABLE_USB=.*/CONFIG_FIRMWARE_ENABLE_USB=n/' \
+            "${CONFIG}"
+
+          # ------------------------------------------------------
+          # No USB filesystems
+          # ------------------------------------------------------
+          sed -i \
+            's/^CONFIG_FIRMWARE_ENABLE_UFSD=.*/CONFIG_FIRMWARE_ENABLE_UFSD=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_ENABLE_FAT=.*/CONFIG_FIRMWARE_ENABLE_FAT=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_ENABLE_EXFAT=.*/CONFIG_FIRMWARE_ENABLE_EXFAT=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_ENABLE_EXT2=.*/CONFIG_FIRMWARE_ENABLE_EXT2=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_ENABLE_EXT3=.*/CONFIG_FIRMWARE_ENABLE_EXT3=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_ENABLE_EXT4=.*/CONFIG_FIRMWARE_ENABLE_EXT4=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_ENABLE_XFS=.*/CONFIG_FIRMWARE_ENABLE_XFS=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_ENABLE_FUSE=.*/CONFIG_FIRMWARE_ENABLE_FUSE=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_ENABLE_SWAP=.*/CONFIG_FIRMWARE_ENABLE_SWAP=n/' \
+            "${CONFIG}"
+
+          # ------------------------------------------------------
+          # No USB peripherals
+          # ------------------------------------------------------
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_UVC=.*/CONFIG_FIRMWARE_INCLUDE_UVC=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_HID=.*/CONFIG_FIRMWARE_INCLUDE_HID=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_SERIAL=.*/CONFIG_FIRMWARE_INCLUDE_SERIAL=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_AUDIO=.*/CONFIG_FIRMWARE_INCLUDE_AUDIO=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_LPRD=.*/CONFIG_FIRMWARE_INCLUDE_LPRD=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_U2EC=.*/CONFIG_FIRMWARE_INCLUDE_U2EC=n/' \
+            "${CONFIG}"
+
+          # ------------------------------------------------------
+          # No QoS extras
+          # ------------------------------------------------------
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_QOS=.*/CONFIG_FIRMWARE_INCLUDE_QOS=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_IMQ=.*/CONFIG_FIRMWARE_INCLUDE_IMQ=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_IFB=.*/CONFIG_FIRMWARE_INCLUDE_IFB=n/' \
+            "${CONFIG}"
+
+          # ------------------------------------------------------
+          # No IPSet
+          # ------------------------------------------------------
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_IPSET=.*/CONFIG_FIRMWARE_INCLUDE_IPSET=n/' \
+            "${CONFIG}"
+
+          # ------------------------------------------------------
+          # No NFS / CIFS
+          # ------------------------------------------------------
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_NFSD=.*/CONFIG_FIRMWARE_INCLUDE_NFSD=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_NFSC=.*/CONFIG_FIRMWARE_INCLUDE_NFSC=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_CIFS=.*/CONFIG_FIRMWARE_INCLUDE_CIFS=n/' \
+            "${CONFIG}"
+
+          # ------------------------------------------------------
+          # No diagnostic utilities
+          # ------------------------------------------------------
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_TCPDUMP=.*/CONFIG_FIRMWARE_INCLUDE_TCPDUMP=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_HDPARM=.*/CONFIG_FIRMWARE_INCLUDE_HDPARM=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_PARTED=.*/CONFIG_FIRMWARE_INCLUDE_PARTED=n/' \
+            "${CONFIG}"
+
+          # ------------------------------------------------------
+          # No file sharing
+          # ------------------------------------------------------
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_SMBD=.*/CONFIG_FIRMWARE_INCLUDE_SMBD=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_SMBD36=.*/CONFIG_FIRMWARE_INCLUDE_SMBD36=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_WINS=.*/CONFIG_FIRMWARE_INCLUDE_WINS=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_SMBD_SYSLOG=.*/CONFIG_FIRMWARE_INCLUDE_SMBD_SYSLOG=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_FTPD=.*/CONFIG_FIRMWARE_INCLUDE_FTPD=n/' \
+            "${CONFIG}"
+
+          # ------------------------------------------------------
+          # No VPN / OpenSSL / SSH extras
+          # ------------------------------------------------------
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_OPENVPN=.*/CONFIG_FIRMWARE_INCLUDE_OPENVPN=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_OPENSSL_EC=.*/CONFIG_FIRMWARE_INCLUDE_OPENSSL_EC=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE=.*/CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_SFTP=.*/CONFIG_FIRMWARE_INCLUDE_SFTP=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_DROPBEAR=.*/CONFIG_FIRMWARE_INCLUDE_DROPBEAR=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_OPENSSH=.*/CONFIG_FIRMWARE_INCLUDE_OPENSSH=n/' \
+            "${CONFIG}"
+
+          # ------------------------------------------------------
+          # No media services
+          # ------------------------------------------------------
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_XUPNPD=.*/CONFIG_FIRMWARE_INCLUDE_XUPNPD=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_MINIDLNA=.*/CONFIG_FIRMWARE_INCLUDE_MINIDLNA=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_FIREFLY=.*/CONFIG_FIRMWARE_INCLUDE_FIREFLY=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_FFMPEG_NEW=.*/CONFIG_FIRMWARE_INCLUDE_FFMPEG_NEW=n/' \
+            "${CONFIG}"
+
+          # ------------------------------------------------------
+          # No download clients
+          # ------------------------------------------------------
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_TRANSMISSION=.*/CONFIG_FIRMWARE_INCLUDE_TRANSMISSION=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_TRANSMISSION_WEB_CONTROL=.*/CONFIG_FIRMWARE_INCLUDE_TRANSMISSION_WEB_CONTROL=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_ARIA=.*/CONFIG_FIRMWARE_INCLUDE_ARIA=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_ARIA_WEB_CONTROL=.*/CONFIG_FIRMWARE_INCLUDE_ARIA_WEB_CONTROL=n/' \
+            "${CONFIG}"
+
+          # ------------------------------------------------------
+          # No extra utilities
+          # ------------------------------------------------------
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_CURL=.*/CONFIG_FIRMWARE_INCLUDE_CURL=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_TTYD=.*/CONFIG_FIRMWARE_INCLUDE_TTYD=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_LRZSZ=.*/CONFIG_FIRMWARE_INCLUDE_LRZSZ=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_HTOP=.*/CONFIG_FIRMWARE_INCLUDE_HTOP=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_NANO=.*/CONFIG_FIRMWARE_INCLUDE_NANO=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_IPERF3=.*/CONFIG_FIRMWARE_INCLUDE_IPERF3=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_MTR=.*/CONFIG_FIRMWARE_INCLUDE_MTR=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_SOCAT=.*/CONFIG_FIRMWARE_INCLUDE_SOCAT=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_SRELAY=.*/CONFIG_FIRMWARE_INCLUDE_SRELAY=n/' \
+            "${CONFIG}"
+
+          # ------------------------------------------------------
+          # No campus-network clients
+          # ------------------------------------------------------
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_SCUTCLIENT=.*/CONFIG_FIRMWARE_INCLUDE_SCUTCLIENT=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_GDUT_DRCOM=.*/CONFIG_FIRMWARE_INCLUDE_GDUT_DRCOM=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_DOGCOM=.*/CONFIG_FIRMWARE_INCLUDE_DOGCOM=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_MINIEAP=.*/CONFIG_FIRMWARE_INCLUDE_MINIEAP=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_NJIT_CLIENT=.*/CONFIG_FIRMWARE_INCLUDE_NJIT_CLIENT=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_MENTOHUST=.*/CONFIG_FIRMWARE_INCLUDE_MENTOHUST=n/' \
+            "${CONFIG}"
+
+          # ------------------------------------------------------
+          # No miscellaneous services
+          # ------------------------------------------------------
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_NAPT66=.*/CONFIG_FIRMWARE_INCLUDE_NAPT66=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_VLMCSD=.*/CONFIG_FIRMWARE_INCLUDE_VLMCSD=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_FRPC=.*/CONFIG_FIRMWARE_INCLUDE_FRPC=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_FRPS=.*/CONFIG_FIRMWARE_INCLUDE_FRPS=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_TUNSAFE=.*/CONFIG_FIRMWARE_INCLUDE_TUNSAFE=n/' \
+            "${CONFIG}"
+
+          sed -i \
+            's/^CONFIG_FIRMWARE_INCLUDE_WIREGUARD=.*/CONFIG_FIRMWARE_INCLUDE_WIREGUARD=n/' \
+            "${CONFIG}"
+
+          # ------------------------------------------------------
+          # Keep Chinese WebUI.
+          # ------------------------------------------------------
+          grep -q '^CONFIG_FIRMWARE_INCLUDE_LANG_CN=y' "${CONFIG}"
+
+          echo "=================================================="
+          echo "Final clean configuration"
+          echo "=================================================="
+
+          cat "${CONFIG}"
+
+      # ==========================================================
+      # 7. Download hanwckf prebuilt toolchain
+      # ==========================================================
+      - name: Download toolchain
+        shell: bash
+        run: |
+          set -eux
+
+          cd rt-n56u/toolchain-mipsel
+
+          sh dl_toolchain.sh
+
+      # ==========================================================
+      # 8. Build
+      # ==========================================================
+      - name: Build firmware
+        shell: bash
+        run: |
+          set -eux
+
+          cd rt-n56u/trunk
+
+          rm -rf images
+
+          fakeroot ./build_firmware_modify MI-4A-100M
+
+      # ==========================================================
+      # 9. Verify output
+      # ==========================================================
+      - name: Verify firmware
+        shell: bash
+        run: |
+          set -eux
+
+          cd rt-n56u/trunk
+
+          ls -lah images
+
+          test -n "$(find images -maxdepth 1 -type f -name '*.trx' -print -quit)"
+
+          echo "=================================================="
+          echo "Firmware generated successfully"
+          echo "=================================================="
+
+          sha256sum images/*.trx
+
+      # ==========================================================
+      # 10. Upload firmware
+      # ==========================================================
+      - name: Upload MI-4A-100M firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: Padavan-MI-4A-100M-CLEAN
+          path: rt-n56u/trunk/images/*.trx
+          if-no-files-found: error
