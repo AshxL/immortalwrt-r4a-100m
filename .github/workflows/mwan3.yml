@@ -1,4 +1,4 @@
-name: Simple mwan3 Build ImmortalWrt R4A 100M
+name: Build mwan3 ImmortalWrt R4A 100M
 
 on:
   workflow_dispatch:
@@ -16,12 +16,34 @@ jobs:
     steps:
 
       # ============================================================
-      # 1. 获取源码
+      # 1. 清理 GitHub Runner 磁盘
+      # ============================================================
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+
+          echo "========================================"
+          echo "剩余磁盘空间"
+          echo "========================================"
+
+          df -h
+
+      # ============================================================
+      # 2. 下载指定版本的 ImmortalWrt
       # ============================================================
       - name: Clone ImmortalWrt
         env:
           SOURCE_REF: ${{ inputs.SOURCE_REF }}
         run: |
+
+          echo "========================================"
+          echo "正在下载 ImmortalWrt"
+          echo "版本 / 分支：$SOURCE_REF"
+          echo "========================================"
+
           git clone \
             --depth 1 \
             --branch "$SOURCE_REF" \
@@ -30,18 +52,20 @@ jobs:
 
           cd immortalwrt
 
+          echo
           echo "========================================"
-          echo "ImmortalWrt"
+          echo "实际源码版本"
           echo "========================================"
-          echo "SOURCE_REF : $SOURCE_REF"
-          echo "COMMIT     : $(git rev-parse --short HEAD)"
-          echo "VERSION    : $(git describe --tags --always || true)"
+
+          git rev-parse --short HEAD
+          git describe --tags --always || true
 
       # ============================================================
-      # 2. 安装编译依赖
+      # 3. 安装编译依赖
       # ============================================================
       - name: Install dependencies
         run: |
+
           sudo apt-get update
 
           sudo apt-get install -y \
@@ -49,6 +73,7 @@ jobs:
             clang \
             flex \
             bison \
+            g++ \
             gawk \
             gcc-multilib \
             g++-multilib \
@@ -61,50 +86,57 @@ jobs:
             swig \
             unzip \
             zlib1g-dev \
-            file
+            file \
+            wget
 
       # ============================================================
-      # 3. 修改并验证 R4A 100M Flash 布局
+      # 4. 修改 Xiaomi Mi Router 4A 100M 的 Flash 布局
       # ============================================================
-      - name: Patch and verify R4A 100M
+      - name: Patch R4A 100M flash layout
         working-directory: immortalwrt
         run: |
+
           python3 <<'PY'
+
           from pathlib import Path
           import re
 
 
           # ========================================================
-          # Flash layout
+          # 通用函数：
+          # 查找 DTS 中完整的 partition 节点
+          #
+          # 可以处理：
+          #
+          # factory: partition@30000 {
+          #
+          # 以及：
+          #
+          # partition@30000 {
+          #
+          # 并且能够正确处理内部嵌套的大括号
           # ========================================================
 
-          FLASH_SIZE = 0x1000000
-          FIRMWARE_START = 0x50000
-          FIRMWARE_SIZE = FLASH_SIZE - FIRMWARE_START
-          IMAGE_SIZE_K = FIRMWARE_SIZE // 1024
+          def find_partition(text, address):
 
-          assert FIRMWARE_SIZE == 0xFB0000
-          assert IMAGE_SIZE_K == 16064
+              pattern = re.compile(
+                  rf'(?m)^[ \t]*(?:[A-Za-z0-9_]+:[ \t]*)?partition@{address}[ \t]*\{{'
+              )
 
-
-          # ========================================================
-          # Find a complete DTS node
-          # ========================================================
-
-          def find_block(text, pattern):
-              match = re.search(pattern, text, re.MULTILINE)
+              match = pattern.search(text)
 
               if not match:
                   raise RuntimeError(
-                      f"找不到目标节点: {pattern}"
+                      f"找不到 partition@{address}"
                   )
 
               start = match.start()
+
               brace_start = text.find("{", match.start())
 
               if brace_start < 0:
                   raise RuntimeError(
-                      f"目标节点没有找到 '{{': {pattern}"
+                      f"partition@{address} 找不到 {{"
                   )
 
               depth = 0
@@ -112,15 +144,20 @@ jobs:
               escaped = False
 
               for i in range(brace_start, len(text)):
+
                   c = text[i]
 
                   if in_string:
+
                       if escaped:
                           escaped = False
+
                       elif c == "\\":
                           escaped = True
+
                       elif c == '"':
                           in_string = False
+
                       continue
 
                   if c == '"':
@@ -130,221 +167,217 @@ jobs:
                       depth += 1
 
                   elif c == "}":
+
                       depth -= 1
 
                       if depth == 0:
+
                           end = i + 1
 
-                          while (
-                              end < len(text)
-                              and text[end].isspace()
-                          ):
+                          while end < len(text) and text[end].isspace():
                               end += 1
 
-                          if (
-                              end < len(text)
-                              and text[end] == ";"
-                          ):
+                          if end < len(text) and text[end] == ";":
                               end += 1
 
-                          return start, end
+                          return start, end, text[brace_start + 1:i]
 
               raise RuntimeError(
-                  f"目标节点大括号没有正确闭合: {pattern}"
+                  f"partition@{address} 大括号没有正确闭合"
               )
 
 
           # ========================================================
-          # 3.1 修改公共 DTSI
+          # 第一部分：修改
+          #
+          # mt7628an_xiaomi_mi-router-4.dtsi
           # ========================================================
 
           dtsi_path = Path(
-              "target/linux/ramips/dts/"
-              "mt7628an_xiaomi_mi-router-4.dtsi"
+              "target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4.dtsi"
           )
 
           dtsi = dtsi_path.read_text()
 
 
-          # --------------------------------------------------------
-          # 找到原 factory partition
-          #
-          # 兼容：
-          #
-          # factory: partition@30000 {
-          #
-          # 以及：
-          #
-          # partition@30000 {
-          #     label = "factory";
-          # };
-          # --------------------------------------------------------
-
-          factory_start, factory_end = find_block(
-              dtsi,
-              r'^[ \t]*(?:[A-Za-z0-9_]+:[ \t]*)?'
-              r'partition@30000[ \t]*\{'
-          )
-
-          factory_old = dtsi[factory_start:factory_end]
+          p30000 = find_partition(dtsi, "30000")
+          p40000 = find_partition(dtsi, "40000")
+          p50000 = find_partition(dtsi, "50000")
 
 
-          # 必须确认它确实是 factory。
+          factory_body = p30000[2]
+
+
+          # 老版本和新版本这里都应该是 0x30000
           if not re.search(
-              r'label\s*=\s*"factory"\s*;',
-              factory_old
+              r'reg\s*=\s*<0x30000\s+0x10000>;',
+              factory_body
           ):
               raise RuntimeError(
-                  "partition@30000 存在，但不是 factory，"
-                  "停止修改以避免破坏 Flash 布局。"
+                  "factory partition 的原始地址不是 0x30000，停止编译。"
               )
 
 
-          # 必须确认原始地址和大小。
-          if not re.search(
-              r'reg\s*=\s*<0x30000\s+0x10000>\s*;',
-              factory_old
-          ):
-              raise RuntimeError(
-                  "factory 原始 reg 不是 "
-                  "<0x30000 0x10000>，"
-                  "停止修改以避免错误刷写。"
-              )
-
-
-          # --------------------------------------------------------
-          # 生成新的 factory
-          # --------------------------------------------------------
-
-          factory_new = factory_old
-
-
-          # 删除可能存在的 DTS label 前缀。
-          factory_new = re.sub(
-              r'^([ \t]*)[A-Za-z0-9_]+:[ \t]*partition@30000',
-              r'\1partition@40000',
-              factory_new,
-              count=1,
-              flags=re.MULTILINE
+          # Factory 搬到 0x40000
+          factory_body = re.sub(
+              r'reg\s*=\s*<0x30000\s+0x10000>;',
+              'reg = <0x40000 0x10000>;',
+              factory_body,
+              count=1
           )
 
 
-          # 如果原节点没有 label 前缀，
-          # 上面的替换不会命中，因此直接处理节点名。
-          factory_new = factory_new.replace(
-              "partition@30000",
-              "partition@40000",
-              1
+          # 新的 factory
+          factory_node = (
+              "factory: partition@40000 {"
+              + factory_body
+              + "};"
           )
 
 
-          factory_new = factory_new.replace(
-              "reg = <0x30000 0x10000>;",
-              "reg = <0x40000 0x10000>;",
-              1
-          )
-
-
-          # 确保 factory 最终保留 label。
-          if not re.search(
-              r'label\s*=\s*"factory"\s*;',
-              factory_new
-          ):
-              raise RuntimeError(
-                  "生成新的 factory partition 失败。"
-              )
-
-
-          # --------------------------------------------------------
-          # 新 crash
-          # --------------------------------------------------------
-
-          crash_new = """partition@30000 {
+          # 新的 crash
+          crash_node = """
+          partition@30000 {
               label = "crash";
               reg = <0x30000 0x10000>;
               read-only;
           };"""
 
 
-          # --------------------------------------------------------
-          # 原 factory 一次性替换成：
-          #
-          # crash
-          # +
-          # factory
-          # --------------------------------------------------------
+          # 按地址从后向前替换，避免位置变化
+          replacements = [
 
-          dtsi = (
-              dtsi[:factory_start]
-              + crash_new
-              + "\n"
-              + factory_new
-              + dtsi[factory_end:]
-          )
+              (p50000[0], p50000[1], ""),
+
+              (p40000[0], p40000[1], factory_node),
+
+              (p30000[0], p30000[1], crash_node),
+
+          ]
 
 
-          # --------------------------------------------------------
-          # 删除 cfg_bak @ 0x50000
-          # --------------------------------------------------------
-
-          cfg_start, cfg_end = find_block(
-              dtsi,
-              r'^[ \t]*(?:[A-Za-z0-9_]+:[ \t]*)?'
-              r'partition@50000[ \t]*\{'
-          )
-
-          cfg_old = dtsi[cfg_start:cfg_end]
-
-
-          if not re.search(
-              r'label\s*=\s*"cfg_bak"\s*;',
-              cfg_old
+          for start, end, replacement in sorted(
+              replacements,
+              reverse=True
           ):
-              raise RuntimeError(
-                  "partition@50000 存在，但不是 cfg_bak，"
-                  "停止修改。"
+              dtsi = (
+                  dtsi[:start]
+                  + replacement
+                  + dtsi[end:]
               )
-
-
-          dtsi = (
-              dtsi[:cfg_start]
-              + dtsi[cfg_end:]
-          )
 
 
           dtsi_path.write_text(dtsi)
 
 
           # ========================================================
-          # 3.2 修改 R4A 100M 专用 DTS
+          # 第二部分：修改
+          #
+          # mt7628an_xiaomi_mi-router-4a-100m.dts
+          #
+          # 删除：
+          # partition@60000 overlay
+          #
+          # 删除：
+          # partition@160000 firmware
+          #
+          # 改成：
+          # partition@50000 firmware
           # ========================================================
 
           dts_path = Path(
-              "target/linux/ramips/dts/"
-              "mt7628an_xiaomi_mi-router-4a-100m.dts"
+              "target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4a-100m.dts"
           )
 
           dts = dts_path.read_text()
 
 
-          partitions_start, partitions_end = find_block(
-              dts,
-              r'^[ \t]*&partitions[ \t]*\{'
+          # 找到整个 &partitions 块
+          match = re.search(
+              r'(?m)^[ \t]*&partitions[ \t]*\{',
+              dts
           )
 
+          if not match:
+              raise RuntimeError(
+                  "找不到 &partitions"
+              )
 
-          firmware_new = f"""&partitions {{
-              partition@{FIRMWARE_START:x} {{
+
+          partitions_start = match.start()
+          brace_start = dts.find("{", match.start())
+
+
+          depth = 0
+          in_string = False
+          escaped = False
+          partitions_end = None
+
+
+          for i in range(brace_start, len(dts)):
+
+              c = dts[i]
+
+              if in_string:
+
+                  if escaped:
+                      escaped = False
+
+                  elif c == "\\":
+                      escaped = True
+
+                  elif c == '"':
+                      in_string = False
+
+                  continue
+
+              if c == '"':
+                  in_string = True
+
+              elif c == "{":
+                  depth += 1
+
+              elif c == "}":
+
+                  depth -= 1
+
+                  if depth == 0:
+
+                      partitions_end = i + 1
+
+                      while (
+                          partitions_end < len(dts)
+                          and dts[partitions_end].isspace()
+                      ):
+                          partitions_end += 1
+
+                      if (
+                          partitions_end < len(dts)
+                          and dts[partitions_end] == ";"
+                      ):
+                          partitions_end += 1
+
+                      break
+
+
+          if partitions_end is None:
+              raise RuntimeError(
+                  "&partitions 大括号没有正确闭合"
+              )
+
+
+          new_partitions = """&partitions {
+              partition@50000 {
                   label = "firmware";
-                  reg = <0x{FIRMWARE_START:x} 0x{FIRMWARE_SIZE:x}>;
+                  reg = <0x50000 0xfb0000>;
                   compatible = "denx,uimage";
-              }};
-          }};"""
+              };
+          };"""
 
 
           dts = (
               dts[:partitions_start]
-              + firmware_new
+              + new_partitions
               + dts[partitions_end:]
           )
 
@@ -353,7 +386,11 @@ jobs:
 
 
           # ========================================================
-          # 3.3 修改 IMAGE_SIZE
+          # 第三部分：
+          #
+          # mt76x8.mk
+          #
+          # 14976k → 16064k
           # ========================================================
 
           mk_path = Path(
@@ -363,15 +400,14 @@ jobs:
           mk = mk_path.read_text()
 
 
-          image_pattern = (
-              r'(define Device/xiaomi_mi-router-4a-100m'
-              r'\s+IMAGE_SIZE\s*:=\s*)\d+k'
+          pattern = re.compile(
+              r'(define Device/xiaomi_mi-router-4a-100m\s*\n'
+              r'\s*IMAGE_SIZE\s*:=\s*)\d+k'
           )
 
 
-          mk, count = re.subn(
-              image_pattern,
-              rf'\g<1>{IMAGE_SIZE_K}k',
+          mk_new, count = pattern.subn(
+              r'\g<1>16064k',
               mk,
               count=1
           )
@@ -383,168 +419,245 @@ jobs:
               )
 
 
-          mk_path.write_text(mk)
+          mk_path.write_text(mk_new)
 
 
-          # ========================================================
-          # 3.4 最终验证
-          # ========================================================
+          print()
+          print("========================================")
+          print("R4A 100M Flash 布局修改完成")
+          print("========================================")
+          print()
+          print("bootloader : 0x000000")
+          print("config     : 0x020000")
+          print("crash      : 0x030000")
+          print("factory    : 0x040000")
+          print("firmware   : 0x050000")
+          print("size       : 0xfb0000")
+          print()
 
-          dtsi = dtsi_path.read_text()
-          dts = dts_path.read_text()
-          mk = mk_path.read_text()
+          PY
 
+      # ============================================================
+      # 5. 严格检查 DTS 是否真的修改成功
+      # ============================================================
+      - name: Verify R4A 100M layout
+        working-directory: immortalwrt
+        run: |
 
-          checks = {
-              "crash @ 0x30000":
-                  re.search(
-                      r'partition@30000\s*\{.*?'
-                      r'label\s*=\s*"crash".*?'
-                      r'reg\s*=\s*<0x30000\s+0x10000>',
-                      dtsi,
-                      re.S
-                  ),
+          python3 <<'PY'
 
-              "factory @ 0x40000":
-                  re.search(
-                      r'(?:factory:\s*)?partition@40000\s*\{.*?'
-                      r'label\s*=\s*"factory".*?'
-                      r'reg\s*=\s*<0x40000\s+0x10000>',
-                      dtsi,
-                      re.S
-                  ),
-
-              "cfg_bak removed":
-                  not re.search(
-                      r'partition@50000\s*\{.*?'
-                      r'label\s*=\s*"cfg_bak"',
-                      dtsi,
-                      re.S
-                  ),
-
-              "firmware @ 0x50000":
-                  re.search(
-                      r'partition@50000\s*\{.*?'
-                      r'label\s*=\s*"firmware".*?'
-                      r'reg\s*=\s*<0x50000\s+0xfb0000>',
-                      dts,
-                      re.S
-                  ),
-
-              "old firmware removed":
-                  "partition@160000" not in dts,
-
-              "IMAGE_SIZE = 16064k":
-                  re.search(
-                      r'define Device/xiaomi_mi-router-4a-100m'
-                      r'.*?IMAGE_SIZE\s*:=\s*16064k',
-                      mk,
-                      re.S
-                  )
-          }
+          from pathlib import Path
+          import re
 
 
-          failed = [
-              name
-              for name, result in checks.items()
-              if not result
-          ]
+          dtsi = Path(
+              "target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4.dtsi"
+          ).read_text()
 
 
-          if failed:
-              raise RuntimeError(
-                  "Flash 布局验证失败:\n"
-                  + "\n".join(
-                      f"  - {item}"
-                      for item in failed
-                  )
+          dts = Path(
+              "target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4a-100m.dts"
+          ).read_text()
+
+
+          mk = Path(
+              "target/linux/ramips/image/mt76x8.mk"
+          ).read_text()
+
+
+          # crash 必须位于 0x30000
+          if not re.search(
+              r'partition@30000\s*\{.*?'
+              r'label\s*=\s*"crash".*?'
+              r'reg\s*=\s*<0x30000\s+0x10000>',
+              dtsi,
+              re.S
+          ):
+              raise SystemExit(
+                  "ERROR: crash 没有正确位于 0x30000"
+              )
+
+
+          # factory 必须位于 0x40000
+          if not re.search(
+              r'factory:\s*partition@40000\s*\{.*?'
+              r'label\s*=\s*"factory".*?'
+              r'reg\s*=\s*<0x40000\s+0x10000>',
+              dtsi,
+              re.S
+          ):
+              raise SystemExit(
+                  "ERROR: factory 没有正确位于 0x40000"
+              )
+
+
+          # cfg_bak 必须删除
+          if re.search(
+              r'partition@50000\s*\{.*?'
+              r'label\s*=\s*"cfg_bak"',
+              dtsi,
+              re.S
+          ):
+              raise SystemExit(
+                  "ERROR: cfg_bak 仍然存在"
+              )
+
+
+          # Firmware 必须位于 0x50000
+          if not re.search(
+              r'partition@50000\s*\{.*?'
+              r'label\s*=\s*"firmware".*?'
+              r'reg\s*=\s*<0x50000\s+0xfb0000>',
+              dts,
+              re.S
+          ):
+              raise SystemExit(
+                  "ERROR: firmware 没有正确位于 0x50000"
+              )
+
+
+          # 不应该还存在旧 firmware
+          if "partition@160000" in dts:
+              raise SystemExit(
+                  "ERROR: partition@160000 仍然存在"
+              )
+
+
+          # IMAGE_SIZE 必须是 16064k
+          if not re.search(
+              r'define Device/xiaomi_mi-router-4a-100m'
+              r'.*?IMAGE_SIZE\s*:=\s*16064k',
+              mk,
+              re.S
+          ):
+              raise SystemExit(
+                  "ERROR: IMAGE_SIZE 不是 16064k"
               )
 
 
           print()
           print("========================================")
-          print("R4A 100M Flash Layout")
+          print("Flash 布局检查全部通过")
           print("========================================")
-          print(f"Flash      : 0x{FLASH_SIZE:x}")
-          print(f"firmware   : 0x{FIRMWARE_START:x}")
-          print(f"size       : 0x{FIRMWARE_SIZE:x}")
-          print(f"IMAGE_SIZE : {IMAGE_SIZE_K}k")
           print()
-          print("crash      : 0x30000 / 0x10000")
-          print("factory    : 0x40000 / 0x10000")
-          print("firmware   : 0x50000 / 0xfb0000")
+          print("crash      = 0x30000")
+          print("factory    = 0x40000")
+          print("firmware   = 0x50000")
+          print("size       = 0xfb0000")
+          print("IMAGE_SIZE = 16064k")
           print()
-          print("Flash layout verification: PASSED")
-          print("========================================")
+
+
           PY
 
       # ============================================================
-      # 4. 更新 feeds
+      # 6. 更新 feeds
       # ============================================================
       - name: Update feeds
         working-directory: immortalwrt
         run: |
+
           ./scripts/feeds update -a
           ./scripts/feeds install -a
 
       # ============================================================
-      # 5. 配置 R4A 100M
+      # 7. 设置编译目标
       # ============================================================
-      - name: Configure R4A 100M
+      - name: Configure Xiaomi Mi Router 4A 100M
         working-directory: immortalwrt
         run: |
+
           cat > .config <<'EOF'
+
           CONFIG_TARGET_ramips=y
           CONFIG_TARGET_ramips_mt76x8=y
           CONFIG_TARGET_ramips_mt76x8_DEVICE_xiaomi_mi-router-4a-100m=y
           CONFIG_TARGET_ROOTFS_SQUASHFS=y
-          CONFIG_PACKAGE_mwan3=y
-          CONFIG_PACKAGE_luci-app-mwan3=y
+
           EOF
 
           make defconfig
 
       # ============================================================
-      # 6. 编译
+      # 8. 检查最终配置
+      # ============================================================
+      - name: Verify target configuration
+        working-directory: immortalwrt
+        run: |
+
+          echo "========================================"
+          echo "TARGET"
+          echo "========================================"
+
+          grep '^CONFIG_TARGET_ramips' .config || true
+
+          echo
+          echo "========================================"
+          echo "DEVICE"
+          echo "========================================"
+
+          grep \
+            'xiaomi_mi-router-4a-100m' \
+            .config || true
+
+      # ============================================================
+      # 9. 编译
       # ============================================================
       - name: Build firmware
         working-directory: immortalwrt
         run: |
+
           echo "========================================"
-          echo "Build"
-          echo "========================================"
-          echo "CPU threads: $(nproc)"
+          echo "开始编译"
           echo "========================================"
 
-          make -j"$(nproc)" V=s
+          make -j4 V=s
 
       # ============================================================
-      # 7. SHA256 + 输出结果
+      # 10. 查看编译结果
       # ============================================================
-      - name: Collect firmware
+      - name: List firmware
         working-directory: immortalwrt
         run: |
-          cd bin/targets/ramips/mt76x8
 
           echo "========================================"
-          echo "R4A 100M firmware"
+          echo "所有生成文件"
           echo "========================================"
 
-          ls -lh *4a-100m*.bin
+          ls -lh \
+            bin/targets/ramips/mt76x8/
 
           echo
+          echo "========================================"
+          echo "R4A 100M 固件"
+          echo "========================================"
+
+          find \
+            bin/targets/ramips/mt76x8/ \
+            -maxdepth 1 \
+            -type f \
+            -iname '*4a-100m*.bin' \
+            -print
+
+      # ============================================================
+      # 11. SHA256
+      # ============================================================
+      - name: Generate SHA256
+        working-directory: immortalwrt
+        run: |
+
+          sha256sum \
+            bin/targets/ramips/mt76x8/*4a-100m*.bin \
+            > r4a-100m-sha256.txt
+
           echo "========================================"
           echo "SHA256"
           echo "========================================"
 
-          sha256sum \
-            *4a-100m*.bin \
-            > r4a-100m-sha256.txt
-
           cat r4a-100m-sha256.txt
 
       # ============================================================
-      # 8. 上传固件
+      # 12. 上传最终固件
       # ============================================================
       - name: Upload firmware
         uses: actions/upload-artifact@v4
@@ -552,6 +665,6 @@ jobs:
           name: immortalwrt-r4a-100m-${{ inputs.SOURCE_REF }}
           path: |
             immortalwrt/bin/targets/ramips/mt76x8/*4a-100m*.bin
-            immortalwrt/bin/targets/ramips/mt76x8/r4a-100m-sha256.txt
+            immortalwrt/r4a-100m-sha256.txt
             immortalwrt/bin/targets/ramips/mt76x8/sha256sums
           retention-days: 7
