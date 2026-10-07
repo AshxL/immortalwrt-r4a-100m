@@ -1,0 +1,326 @@
+name: Build ImmortalWrt 21.02.7 R4A 100M
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+
+      # =========================================
+      # 1. 清理 GitHub Runner 磁盘空间
+      # =========================================
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache
+          df -h
+
+      # =========================================
+      # 2. 下载 ImmortalWrt 21.02.7
+      # =========================================
+      - name: Clone ImmortalWrt 21.02.7
+        run: |
+          git clone --depth 1 \
+            --branch v21.02.7 \
+            https://github.com/immortalwrt/immortalwrt.git \
+            immortalwrt
+
+      # =========================================
+      # 3. 安装编译环境
+      # =========================================
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            build-essential \
+            clang \
+            flex \
+            bison \
+            g++ \
+            gawk \
+            gcc-multilib \
+            g++-multilib \
+            gettext \
+            git \
+            libncurses5-dev \
+            libssl-dev \
+            python3-setuptools \
+            rsync \
+            swig \
+            unzip \
+            zlib1g-dev \
+            file \
+            wget
+
+      # =========================================
+      # 4. 修改 DTS / 分区布局
+      # =========================================
+      - name: Patch R4A 100M flash layout
+        working-directory: immortalwrt
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          # -----------------------------------------
+          # 文件 1：
+          # mt7628an_xiaomi_mi-router-4.dtsi
+          # -----------------------------------------
+
+          dtsi_path = Path(
+              "target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4.dtsi"
+          )
+
+          text = dtsi_path.read_text()
+
+          old_pattern = re.compile(
+              r'''
+              \s*
+              factory:\ partition@30000\s*\{
+              .*?
+              \}\s*;
+              \s*
+              partition@40000\s*\{
+              .*?
+              \}\s*;
+              \s*
+              partition@50000\s*\{
+              .*?
+              \}\s*;
+              ''',
+              re.S | re.X
+          )
+
+          new_block = r'''
+
+              partition@30000 {
+                  label = "crash";
+                  reg = <0x30000 0x10000>;
+                  read-only;
+              };
+
+              factory: partition@40000 {
+                  label = "factory";
+                  reg = <0x40000 0x10000>;
+                  read-only;
+              };
+          '''
+
+          new_text, count = old_pattern.subn(new_block, text, count=1)
+
+          if count != 1:
+              raise SystemExit(
+                  "ERROR: 原始 DTSI 分区结构没有找到，停止编译。"
+              )
+
+          dtsi_path.write_text(new_text)
+
+          # -----------------------------------------
+          # 文件 2：
+          # mt7628an_xiaomi_mi-router-4a-100m.dts
+          # -----------------------------------------
+
+          dts_path = Path(
+              "target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4a-100m.dts"
+          )
+
+          text = dts_path.read_text()
+
+          old_pattern = re.compile(
+              r'&partitions\s*\{.*?\n\};',
+              re.S
+          )
+
+          new_block = '''&partitions {
+              partition@50000 {
+                  label = "firmware";
+                  reg = <0x50000 0xfb0000>;
+                  compatible = "denx,uimage";
+              };
+          };'''
+
+          new_text, count = old_pattern.subn(
+              new_block,
+              text,
+              count=1
+          )
+
+          if count != 1:
+              raise SystemExit(
+                  "ERROR: R4A 100M DTS 分区结构没有找到，停止编译。"
+              )
+
+          dts_path.write_text(new_text)
+
+          # -----------------------------------------
+          # 文件 3：
+          # mt76x8.mk
+          # -----------------------------------------
+
+          mk_path = Path(
+              "target/linux/ramips/image/mt76x8.mk"
+          )
+
+          text = mk_path.read_text()
+
+          old = '''define Device/xiaomi_mi-router-4a-100m
+            IMAGE_SIZE := 14976k'''
+
+          new = '''define Device/xiaomi_mi-router-4a-100m
+            IMAGE_SIZE := 16064k'''
+
+          if old not in text:
+              raise SystemExit(
+                  "ERROR: IMAGE_SIZE 原始定义没有找到，停止编译。"
+              )
+
+          text = text.replace(old, new, 1)
+
+          mk_path.write_text(text)
+
+          print("DTS patch completed successfully.")
+          PY
+
+      # =========================================
+      # 5. 检查修改结果
+      # =========================================
+      - name: Verify flash layout
+        working-directory: immortalwrt
+        run: |
+
+          echo "========================================"
+          echo "DTSI"
+          echo "========================================"
+
+          grep -n -A8 -B2 \
+            'partition@30000' \
+            target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4.dtsi
+
+          echo
+          echo "========================================"
+          echo "R4A 100M DTS"
+          echo "========================================"
+
+          grep -n -A6 \
+            'partition@50000' \
+            target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4a-100m.dts
+
+          echo
+          echo "========================================"
+          echo "IMAGE_SIZE"
+          echo "========================================"
+
+          grep -n -A8 \
+            'Device/xiaomi_mi-router-4a-100m' \
+            target/linux/ramips/image/mt76x8.mk
+
+      # =========================================
+      # 6. 更新软件源
+      # =========================================
+      - name: Update feeds
+        working-directory: immortalwrt
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      # =========================================
+      # 7. 指定编译目标
+      # =========================================
+      - name: Configure Xiaomi Mi Router 4A 100M
+        working-directory: immortalwrt
+        run: |
+
+          cat > .config <<'EOF'
+          CONFIG_TARGET_ramips=y
+          CONFIG_TARGET_ramips_mt76x8=y
+          CONFIG_TARGET_ramips_mt76x8_DEVICE_xiaomi_mi-router-4a-100m=y
+          CONFIG_TARGET_ROOTFS_SQUASHFS=y
+          EOF
+
+          make defconfig
+
+      # =========================================
+      # 8. 再次确认最终配置
+      # =========================================
+      - name: Verify build configuration
+        working-directory: immortalwrt
+        run: |
+
+          echo "========================================"
+          echo "TARGET CONFIG"
+          echo "========================================"
+
+          grep '^CONFIG_TARGET_ramips' .config || true
+
+          echo
+          echo "========================================"
+          echo "DEVICE CONFIG"
+          echo "========================================"
+
+          grep 'xiaomi_mi-router-4a-100m' .config || true
+
+      # =========================================
+      # 9. 开始编译
+      # =========================================
+      - name: Build firmware
+        working-directory: immortalwrt
+        run: |
+          make -j4 V=s
+
+      # =========================================
+      # 10. 查看最终固件
+      # =========================================
+      - name: List firmware
+        working-directory: immortalwrt
+        run: |
+
+          echo "========================================"
+          echo "BUILD OUTPUT"
+          echo "========================================"
+
+          ls -lh \
+            bin/targets/ramips/mt76x8/
+
+          echo
+          echo "========================================"
+          echo "R4A 100M IMAGES"
+          echo "========================================"
+
+          find \
+            bin/targets/ramips/mt76x8/ \
+            -maxdepth 1 \
+            -type f \
+            -iname '*4a-100m*.bin' \
+            -print
+
+      # =========================================
+      # 11. 计算 SHA256
+      # =========================================
+      - name: Generate SHA256
+        working-directory: immortalwrt
+        run: |
+
+          sha256sum \
+            bin/targets/ramips/mt76x8/*4a-100m*.bin \
+            > r4a-100m-sha256.txt
+
+          cat r4a-100m-sha256.txt
+
+      # =========================================
+      # 12. 上传最终固件
+      # =========================================
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: immortalwrt-21.02.7-r4a-100m
+          path: |
+            immortalwrt/bin/targets/ramips/mt76x8/*4a-100m*.bin
+            immortalwrt/r4a-100m-sha256.txt
+            immortalwrt/bin/targets/ramips/mt76x8/sha256sums
+          retention-days: 7
