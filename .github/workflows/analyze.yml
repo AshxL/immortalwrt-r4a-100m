@@ -1,0 +1,583 @@
+name: Analyze R4A 100M Firmware
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-22.04
+
+    steps:
+      # ============================================================
+      # 1. 下载分析脚本所在仓库
+      # ============================================================
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+
+      # ============================================================
+      # 2. 安装分析工具
+      # ============================================================
+      - name: Install analysis tools
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            binwalk \
+            file \
+            xxd \
+            bsdextrautils \
+            device-tree-compiler \
+            python3 \
+            python3-pip
+
+      # ============================================================
+      # 3. 克隆实际可启动的 R4A 100M 固件仓库
+      #
+      # 注意：
+      # 这里只读，不修改该仓库。
+      # ============================================================
+      - name: Clone reference firmware repository
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          rm -rf reference-repo
+
+          git clone \
+            --depth 1 \
+            https://github.com/kily-smith/MI-4A100M.git \
+            reference-repo
+
+          cd reference-repo
+
+          echo "===== Repository ====="
+          git remote -v
+          git rev-parse HEAD
+
+          echo
+          echo "===== BIN files ====="
+          find . -type f -iname "*.bin" -printf '%p\t%k KiB\n' | sort
+
+      # ============================================================
+      # 4. 找到指定的 Lean 2021-03-17 固件
+      # ============================================================
+      - name: Locate Lean firmware
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd reference-repo
+
+          LEAN_BIN="$(find . -type f -name '*2021-3-17*100m*squashfs-sysupgrade.bin' | head -n 1 || true)"
+
+          if [ -z "$LEAN_BIN" ]; then
+            echo "ERROR: Lean 2021-3-17 R4A 100M firmware was not found."
+            echo
+            echo "Available BIN files:"
+            find . -type f -iname "*.bin" -print
+            exit 1
+          fi
+
+          echo "Found:"
+          echo "$LEAN_BIN"
+
+          realpath "$LEAN_BIN" > ../lean_bin_path.txt
+
+      # ============================================================
+      # 5. 精确二进制分析
+      # ============================================================
+      - name: Analyze Lean firmware
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          BIN="$(cat lean_bin_path.txt)"
+          REPORT="lean-r4a-100m-analysis.txt"
+
+          {
+            echo "============================================================"
+            echo " Xiaomi Mi Router 4A 100M Firmware Binary Analysis"
+            echo "============================================================"
+            echo
+
+            echo "Repository:"
+            cd reference-repo
+            git remote get-url origin
+            echo
+
+            echo "Repository commit:"
+            git rev-parse HEAD
+            echo
+
+            echo "Firmware:"
+            echo "$BIN"
+            echo
+
+            echo "============================================================"
+            echo "FILE INFORMATION"
+            echo "============================================================"
+
+            stat "$BIN"
+            file "$BIN"
+
+            echo
+            echo "Byte size:"
+            stat -c '%s bytes' "$BIN"
+
+            echo
+            echo "KiB:"
+            python3 - "$BIN" <<'PY'
+          import os
+          import sys
+
+          p = sys.argv[1]
+          size = os.path.getsize(p)
+
+          print(f"{size / 1024:.2f} KiB")
+          print(f"{size / 1024 / 1024:.4f} MiB")
+          PY
+
+            echo
+            echo "SHA256:"
+            sha256sum "$BIN"
+
+            echo
+            echo "============================================================"
+            echo "FIRST 4 KiB"
+            echo "============================================================"
+
+            xxd -g 1 -l 4096 "$BIN"
+
+            echo
+            echo "============================================================"
+            echo "uIMAGE / U-BOOT MAGIC SCAN"
+            echo "============================================================"
+
+            python3 - "$BIN" <<'PY'
+          import sys
+          import struct
+
+          p = sys.argv[1]
+
+          MAGIC = {
+              b'\x27\x05\x19\x56': 'uImage',
+              b'\xd0\x0d\xfe\xed': 'Flattened Device Tree / DTB',
+              b'hsqs': 'SquashFS little-endian',
+              b'sqsh': 'SquashFS big-endian',
+              b'ustar': 'tar',
+          }
+
+          with open(p, 'rb') as f:
+              data = f.read()
+
+          for magic, name in MAGIC.items():
+              print()
+              print(f'--- {name} : {magic!r} ---')
+
+              pos = 0
+
+              while True:
+                  pos = data.find(magic, pos)
+
+                  if pos < 0:
+                      break
+
+                  print(f'offset = 0x{pos:08X} ({pos})')
+
+                  if magic == b'\x27\x05\x19\x56':
+                      if pos + 64 <= len(data):
+                          header = data[pos:pos+64]
+
+                          try:
+                              (
+                                  magic_v,
+                                  hcrc,
+                                  time,
+                                  size,
+                                  load,
+                                  ep,
+                                  dcrc,
+                                  os_v,
+                                  arch,
+                                  image_type,
+                                  comp
+                              ) = struct.unpack(
+                                  '>7I4B',
+                                  header
+                              )
+
+                              print(f'  uImage payload size = 0x{size:X} ({size} bytes)')
+                              print(f'  load address        = 0x{load:X}')
+                              print(f'  entry point         = 0x{ep:X}')
+                              print(f'  OS                  = {os_v}')
+                              print(f'  architecture        = {arch}')
+                              print(f'  image type          = {image_type}')
+                              print(f'  compression         = {comp}')
+                              print(f'  payload end         = 0x{pos + 64 + size:X}')
+
+                          except Exception as e:
+                              print(f'  header decode failed: {e}')
+
+                  pos += 1
+          PY
+
+            echo
+            echo "============================================================"
+            echo "SQUASHFS SUPERBLOCK SCAN"
+            echo "============================================================"
+
+            python3 - "$BIN" <<'PY'
+          import sys
+          import struct
+
+          p = sys.argv[1]
+
+          with open(p, 'rb') as f:
+              data = f.read()
+
+          magics = [
+              (b'hsqs', 'SquashFS LE'),
+              (b'sqsh', 'SquashFS BE'),
+          ]
+
+          for magic, name in magics:
+              pos = 0
+
+              while True:
+                  pos = data.find(magic, pos)
+
+                  if pos < 0:
+                      break
+
+                  print(f'{name} at 0x{pos:08X} ({pos})')
+
+                  if magic == b'hsqs' and pos + 96 <= len(data):
+                      try:
+                          (
+                              magic_v,
+                              inode_count,
+                              mkfs_time,
+                              block_size,
+                              fragments,
+                              compression,
+                              block_log,
+                              flags,
+                              no_ids,
+                              major,
+                              minor,
+                              root_inode,
+                              bytes_used,
+                              id_table_start,
+                              xattr_id_table_start,
+                              inode_table_start,
+                              directory_table_start,
+                              fragment_table_start,
+                              lookup_table_start
+                          ) = struct.unpack_from(
+                              '<IIIIHHHHHHQQQQQQQQ',
+                              data,
+                              pos
+                          )
+
+                          print(f'  inode count       = {inode_count}')
+                          print(f'  block size        = {block_size}')
+                          print(f'  compression       = {compression}')
+                          print(f'  major/minor       = {major}.{minor}')
+                          print(f'  bytes used        = {bytes_used}')
+                          print(f'  filesystem end    = 0x{pos + bytes_used:X}')
+
+                      except Exception as e:
+                          print(f'  superblock decode failed: {e}')
+
+                  pos += 1
+          PY
+
+            echo
+            echo "============================================================"
+            echo "FDT / DTB SCAN"
+            echo "============================================================"
+
+            python3 - "$BIN" <<'PY'
+          import sys
+          import struct
+
+          p = sys.argv[1]
+
+          with open(p, 'rb') as f:
+              data = f.read()
+
+          magic = b'\xd0\x0d\xfe\xed'
+          pos = 0
+
+          while True:
+              pos = data.find(magic, pos)
+
+              if pos < 0:
+                  break
+
+              print(f'DTB/FDT magic at 0x{pos:08X} ({pos})')
+
+              if pos + 40 <= len(data):
+                  try:
+                      (
+                          magic_v,
+                          total_size,
+                          off_dt_struct,
+                          off_dt_strings,
+                          off_mem_rsvmap,
+                          version,
+                          last_comp_version,
+                          boot_cpuid_phys,
+                          size_dt_strings,
+                          size_dt_struct
+                      ) = struct.unpack_from('>10I', data, pos)
+
+                      print(f'  total size       = 0x{total_size:X} ({total_size})')
+                      print(f'  version          = {version}')
+                      print(f'  structure size   = 0x{size_dt_struct:X}')
+                      print(f'  strings size     = 0x{size_dt_strings:X}')
+                      print(f'  DTB end          = 0x{pos + total_size:X}')
+
+                  except Exception as e:
+                      print(f'  DTB decode failed: {e}')
+
+              pos += 1
+          PY
+
+            echo
+            echo "============================================================"
+            echo "COMMON COMPRESSION MAGIC SCAN"
+            echo "============================================================"
+
+            python3 - "$BIN" <<'PY'
+          import sys
+
+          p = sys.argv[1]
+
+          magics = {
+              b'\x1f\x8b': 'gzip',
+              b'\x5d\x00\x00': 'LZMA',
+              b'\xfd7zXZ\x00': 'XZ',
+              b'BZh': 'bzip2',
+              b'\x28\xb5\x2f\xfd': 'Zstandard',
+              b'\x04\x22\x4d\x18': 'LZ4',
+          }
+
+          with open(p, 'rb') as f:
+              data = f.read()
+
+          for magic, name in magics.items():
+              positions = []
+              pos = 0
+
+              while True:
+                  pos = data.find(magic, pos)
+
+                  if pos < 0:
+                      break
+
+                  positions.append(pos)
+                  pos += 1
+
+              print(f'{name}: {len(positions)} occurrence(s)')
+
+              for p in positions[:50]:
+                  print(f'  0x{p:08X} ({p})')
+
+          PY
+
+            echo
+            echo "============================================================"
+            echo "BINWALK"
+            echo "============================================================"
+
+            binwalk "$BIN" || true
+
+            echo
+            echo "============================================================"
+            echo "BINWALK SIGNATURE SCAN"
+            echo "============================================================"
+
+            binwalk --signature "$BIN" || true
+
+            echo
+            echo "============================================================"
+            echo "FLASH ADDRESS MAPPING"
+            echo "============================================================"
+
+            python3 - "$BIN" <<'PY'
+          import sys
+          import os
+
+          p = sys.argv[1]
+          size = os.path.getsize(p)
+
+          print(f'BIN size = 0x{size:X} ({size} bytes)')
+          print()
+
+          print('Assuming firmware partition starts at Flash 0x50000:')
+          print()
+
+          flash_start = 0x50000
+
+          print(f'BIN offset 0x00000000 -> Flash 0x{flash_start:08X}')
+          print(f'BIN offset 0x00100000 -> Flash 0x{flash_start + 0x100000:08X}')
+          print(f'BIN offset 0x00200000 -> Flash 0x{flash_start + 0x200000:08X}')
+
+          print()
+          print('End of BIN:')
+          print(f'Flash address = 0x{flash_start + size:08X}')
+
+          print()
+          print('Expected 16 MiB Flash:')
+          print('Flash end = 0x01000000')
+
+          print()
+          print('Expected firmware partition:')
+          print('start = 0x00050000')
+          print('size  = 0x00FB0000')
+          print('end   = 0x01000000')
+
+          print()
+          expected_size = 0xFB0000
+
+          if size <= expected_size:
+              print('RESULT: BIN fits inside 0x50000 + 0xFB0000.')
+          else:
+              print('RESULT: ERROR - BIN exceeds the expected firmware partition.')
+
+          print()
+          print('Remaining space inside firmware partition:')
+          remaining = expected_size - size
+          print(f'0x{remaining:X} ({remaining} bytes)')
+          print(f'{remaining / 1024:.2f} KiB')
+          PY
+
+            echo
+            echo "============================================================"
+            echo "RAW HEXDUMP AROUND ALL DISCOVERED SIGNATURES"
+            echo "============================================================"
+
+            python3 - "$BIN" <<'PY'
+          import sys
+
+          p = sys.argv[1]
+
+          signatures = [
+              (b'\x27\x05\x19\x56', 'uImage'),
+              (b'hsqs', 'SquashFS LE'),
+              (b'sqsh', 'SquashFS BE'),
+              (b'\xd0\x0d\xfe\xed', 'DTB'),
+          ]
+
+          with open(p, 'rb') as f:
+              data = f.read()
+
+          for magic, name in signatures:
+              print()
+              print(f'===== {name} =====')
+
+              pos = 0
+              count = 0
+
+              while True:
+                  pos = data.find(magic, pos)
+
+                  if pos < 0 or count >= 20:
+                      break
+
+                  start = max(0, pos - 64)
+                  end = min(len(data), pos + 128)
+
+                  print(f'offset 0x{pos:08X}')
+                  print(f'bytes 0x{start:08X} - 0x{end:08X}')
+
+                  chunk = data[start:end]
+
+                  for i in range(0, len(chunk), 16):
+                      row = chunk[i:i+16]
+                      print(
+                          f'{start+i:08X}: ' +
+                          ' '.join(f'{b:02x}' for b in row)
+                      )
+
+                  pos += 1
+                  count += 1
+          PY
+
+            echo
+            echo "============================================================"
+            echo "FINAL"
+            echo "============================================================"
+
+          } > "$REPORT"
+
+          echo
+          echo "============================================================"
+          echo "ANALYSIS REPORT"
+          echo "============================================================"
+
+          cat "$REPORT"
+
+      # ============================================================
+      # 6. 同时分析仓库里的 ImmortalWrt 版本 BIN
+      # ============================================================
+      - name: Locate modified ImmortalWrt firmware
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd reference-repo
+
+          find . \
+            -type f \
+            -iname "*.bin" \
+            ! -name '*2021-3-17*' \
+            -print \
+            | sort \
+            > ../other_bins.txt
+
+          cat ../other_bins.txt
+
+      # ============================================================
+      # 7. 保存 Artifact
+      # ============================================================
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          mkdir -p output
+
+          BIN="$(cat lean_bin_path.txt)"
+
+          cp "$BIN" output/
+
+          cp lean-r4a-100m-analysis.txt output/
+
+          cp other_bins.txt output/
+
+          echo "===== SHA256 =====" > output/SHA256SUMS.txt
+
+          sha256sum output/*.bin >> output/SHA256SUMS.txt
+
+          echo
+          echo "Output:"
+          find output -type f -printf '%p\t%k KiB\n'
+
+      # ============================================================
+      # 8. 上传分析结果
+      # ============================================================
+      - name: Upload analysis artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: r4a-100m-firmware-analysis
+          path: output/
+          retention-days: 30
+          if-no-files-found: error
