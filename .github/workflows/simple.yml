@@ -1,4 +1,4 @@
-name: Simple Build ImmortalWrt R4A 100M
+name: Simple1 Build ImmortalWrt R4A 100M
 
 on:
   workflow_dispatch:
@@ -65,20 +65,6 @@ jobs:
 
       # ============================================================
       # 3. 修改并验证 R4A 100M Flash 布局
-      #
-      # Flash:
-      #
-      # 0x000000  bootloader
-      # 0x020000  config
-      # 0x030000  crash
-      # 0x040000  factory
-      # 0x050000  firmware
-      # 0x1000000 Flash end
-      #
-      # firmware:
-      #
-      # 0x1000000 - 0x050000 = 0xFB0000
-      # 0xFB0000 / 1024 = 16064 KiB
       # ============================================================
       - name: Patch and verify R4A 100M
         working-directory: immortalwrt
@@ -95,13 +81,14 @@ jobs:
           FLASH_SIZE = 0x1000000
           FIRMWARE_START = 0x50000
           FIRMWARE_SIZE = FLASH_SIZE - FIRMWARE_START
+          IMAGE_SIZE_K = FIRMWARE_SIZE // 1024
 
           assert FIRMWARE_SIZE == 0xFB0000
-          assert FIRMWARE_SIZE // 1024 == 16064
+          assert IMAGE_SIZE_K == 16064
 
 
           # ========================================================
-          # DTS block parser
+          # Find a complete DTS node
           # ========================================================
 
           def find_block(text, pattern):
@@ -180,61 +167,97 @@ jobs:
 
 
           # --------------------------------------------------------
-          # 原 factory:
+          # 找到原 factory partition
+          #
+          # 兼容：
           #
           # factory: partition@30000 {
-          #     label = "factory";
-          #     reg = <0x30000 0x10000>;
-          # };
           #
-          # 改成：
+          # 以及：
           #
           # partition@30000 {
-          #     label = "crash";
-          #     reg = <0x30000 0x10000>;
-          #     read-only;
-          # };
-          #
-          # factory: partition@40000 {
           #     label = "factory";
-          #     reg = <0x40000 0x10000>;
           # };
           # --------------------------------------------------------
 
-          factory_pattern = (
-              r'^[ \t]*'
-              r'factory:[ \t]*partition@30000[ \t]*\{'
-          )
-
           factory_start, factory_end = find_block(
               dtsi,
-              factory_pattern
+              r'^[ \t]*(?:[A-Za-z0-9_]+:[ \t]*)?'
+              r'partition@30000[ \t]*\{'
           )
 
           factory_old = dtsi[factory_start:factory_end]
 
 
+          # 必须确认它确实是 factory。
           if not re.search(
-              r'reg\s*=\s*<0x30000\s+0x10000>;',
+              r'label\s*=\s*"factory"\s*;',
               factory_old
           ):
               raise RuntimeError(
-                  "factory 原始布局不是 "
-                  "0x30000 / 0x10000，停止修改。"
+                  "partition@30000 存在，但不是 factory，"
+                  "停止修改以避免破坏 Flash 布局。"
               )
 
 
-          # 只修改 factory 节点内部地址。
-          factory_new = factory_old.replace(
+          # 必须确认原始地址和大小。
+          if not re.search(
+              r'reg\s*=\s*<0x30000\s+0x10000>\s*;',
+              factory_old
+          ):
+              raise RuntimeError(
+                  "factory 原始 reg 不是 "
+                  "<0x30000 0x10000>，"
+                  "停止修改以避免错误刷写。"
+              )
+
+
+          # --------------------------------------------------------
+          # 生成新的 factory
+          # --------------------------------------------------------
+
+          factory_new = factory_old
+
+
+          # 删除可能存在的 DTS label 前缀。
+          factory_new = re.sub(
+              r'^([ \t]*)[A-Za-z0-9_]+:[ \t]*partition@30000',
+              r'\1partition@40000',
+              factory_new,
+              count=1,
+              flags=re.MULTILINE
+          )
+
+
+          # 如果原节点没有 label 前缀，
+          # 上面的替换不会命中，因此直接处理节点名。
+          factory_new = factory_new.replace(
               "partition@30000",
               "partition@40000",
               1
-          ).replace(
+          )
+
+
+          factory_new = factory_new.replace(
               "reg = <0x30000 0x10000>;",
               "reg = <0x40000 0x10000>;",
               1
           )
 
+
+          # 确保 factory 最终保留 label。
+          if not re.search(
+              r'label\s*=\s*"factory"\s*;',
+              factory_new
+          ):
+              raise RuntimeError(
+                  "生成新的 factory partition 失败。"
+              )
+
+
+          # --------------------------------------------------------
+          # 新 crash
+          # --------------------------------------------------------
 
           crash_new = """partition@30000 {
               label = "crash";
@@ -243,7 +266,14 @@ jobs:
           };"""
 
 
-          # 原 factory 一次性替换成 crash + factory。
+          # --------------------------------------------------------
+          # 原 factory 一次性替换成：
+          #
+          # crash
+          # +
+          # factory
+          # --------------------------------------------------------
+
           dtsi = (
               dtsi[:factory_start]
               + crash_new
@@ -259,8 +289,22 @@ jobs:
 
           cfg_start, cfg_end = find_block(
               dtsi,
-              r'^[ \t]*partition@50000[ \t]*\{'
+              r'^[ \t]*(?:[A-Za-z0-9_]+:[ \t]*)?'
+              r'partition@50000[ \t]*\{'
           )
+
+          cfg_old = dtsi[cfg_start:cfg_end]
+
+
+          if not re.search(
+              r'label\s*=\s*"cfg_bak"\s*;',
+              cfg_old
+          ):
+              raise RuntimeError(
+                  "partition@50000 存在，但不是 cfg_bak，"
+                  "停止修改。"
+              )
+
 
           dtsi = (
               dtsi[:cfg_start]
@@ -272,7 +316,7 @@ jobs:
 
 
           # ========================================================
-          # 3.2 修改 R4A 100M DTS
+          # 3.2 修改 R4A 100M 专用 DTS
           # ========================================================
 
           dts_path = Path(
@@ -327,7 +371,7 @@ jobs:
 
           mk, count = re.subn(
               image_pattern,
-              rf'\g<1>{FIRMWARE_SIZE // 1024}k',
+              rf'\g<1>{IMAGE_SIZE_K}k',
               mk,
               count=1
           )
@@ -363,7 +407,7 @@ jobs:
 
               "factory @ 0x40000":
                   re.search(
-                      r'factory:\s*partition@40000\s*\{.*?'
+                      r'(?:factory:\s*)?partition@40000\s*\{.*?'
                       r'label\s*=\s*"factory".*?'
                       r'reg\s*=\s*<0x40000\s+0x10000>',
                       dtsi,
@@ -419,16 +463,16 @@ jobs:
 
           print()
           print("========================================")
-          print("R4A 100M Flash layout")
+          print("R4A 100M Flash Layout")
           print("========================================")
-          print(f"Flash       : 0x{FLASH_SIZE:x}")
-          print(f"firmware    : 0x{FIRMWARE_START:x}")
-          print(f"size        : 0x{FIRMWARE_SIZE:x}")
-          print(f"IMAGE_SIZE  : {FIRMWARE_SIZE // 1024}k")
+          print(f"Flash      : 0x{FLASH_SIZE:x}")
+          print(f"firmware   : 0x{FIRMWARE_START:x}")
+          print(f"size       : 0x{FIRMWARE_SIZE:x}")
+          print(f"IMAGE_SIZE : {IMAGE_SIZE_K}k")
           print()
-          print("crash       : 0x30000 / 0x10000")
-          print("factory     : 0x40000 / 0x10000")
-          print("firmware    : 0x50000 / 0xfb0000")
+          print("crash      : 0x30000 / 0x10000")
+          print("factory    : 0x40000 / 0x10000")
+          print("firmware   : 0x50000 / 0xfb0000")
           print()
           print("Flash layout verification: PASSED")
           print("========================================")
