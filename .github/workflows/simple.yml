@@ -88,6 +88,10 @@ jobs:
           import re
 
 
+          # ========================================================
+          # Flash layout
+          # ========================================================
+
           FLASH_SIZE = 0x1000000
           FIRMWARE_START = 0x50000
           FIRMWARE_SIZE = FLASH_SIZE - FIRMWARE_START
@@ -95,6 +99,10 @@ jobs:
           assert FIRMWARE_SIZE == 0xFB0000
           assert FIRMWARE_SIZE // 1024 == 16064
 
+
+          # ========================================================
+          # DTS block parser
+          # ========================================================
 
           def find_block(text, pattern):
               match = re.search(pattern, text, re.MULTILINE)
@@ -159,16 +167,6 @@ jobs:
               )
 
 
-          def replace_block(text, pattern, replacement):
-              start, end = find_block(text, pattern)
-
-              return (
-                  text[:start]
-                  + replacement
-                  + text[end:]
-              )
-
-
           # ========================================================
           # 3.1 修改公共 DTSI
           # ========================================================
@@ -181,11 +179,31 @@ jobs:
           dtsi = dtsi_path.read_text()
 
 
-          # 原始 factory 必须位于 0x30000。
+          # --------------------------------------------------------
+          # 原 factory:
+          #
+          # factory: partition@30000 {
+          #     label = "factory";
+          #     reg = <0x30000 0x10000>;
+          # };
+          #
+          # 改成：
+          #
+          # partition@30000 {
+          #     label = "crash";
+          #     reg = <0x30000 0x10000>;
+          #     read-only;
+          # };
+          #
+          # factory: partition@40000 {
+          #     label = "factory";
+          #     reg = <0x40000 0x10000>;
+          # };
+          # --------------------------------------------------------
+
           factory_pattern = (
               r'^[ \t]*'
-              r'(?:factory:[ \t]*)?'
-              r'partition@30000[ \t]*\{'
+              r'factory:[ \t]*partition@30000[ \t]*\{'
           )
 
           factory_start, factory_end = find_block(
@@ -195,31 +213,29 @@ jobs:
 
           factory_old = dtsi[factory_start:factory_end]
 
+
           if not re.search(
               r'reg\s*=\s*<0x30000\s+0x10000>;',
               factory_old
           ):
               raise RuntimeError(
-                  "factory 原始布局不是 0x30000 / 0x10000，"
-                  "为避免错误修改，停止编译。"
+                  "factory 原始布局不是 "
+                  "0x30000 / 0x10000，停止修改。"
               )
 
 
-          # factory: 0x30000 -> 0x40000
+          # 只修改 factory 节点内部地址。
           factory_new = factory_old.replace(
               "partition@30000",
               "partition@40000",
               1
-          )
-
-          factory_new = factory_new.replace(
+          ).replace(
               "reg = <0x30000 0x10000>;",
               "reg = <0x40000 0x10000>;",
               1
           )
 
 
-          # crash 占用原 factory 的 0x30000。
           crash_new = """partition@30000 {
               label = "crash";
               reg = <0x30000 0x10000>;
@@ -227,40 +243,28 @@ jobs:
           };"""
 
 
-          # 从后往前替换，避免位置偏移。
-          replacements = [
-              (factory_start, factory_end, crash_new)
-          ]
+          # 原 factory 一次性替换成 crash + factory。
+          dtsi = (
+              dtsi[:factory_start]
+              + crash_new
+              + "\n"
+              + factory_new
+              + dtsi[factory_end:]
+          )
 
 
-          # 删除原 cfg_bak @ 0x50000。
+          # --------------------------------------------------------
+          # 删除 cfg_bak @ 0x50000
+          # --------------------------------------------------------
+
           cfg_start, cfg_end = find_block(
               dtsi,
               r'^[ \t]*partition@50000[ \t]*\{'
           )
 
-          replacements.append(
-              (cfg_start, cfg_end, "")
-          )
-
-
-          for start, end, replacement in sorted(
-              replacements,
-              reverse=True
-          ):
-              dtsi = (
-                  dtsi[:start]
-                  + replacement
-                  + dtsi[end:]
-              )
-
-
-          # 此时 factory 原节点已经变成了 partition@40000。
-          # 再定位并写入最终 factory。
-          dtsi = replace_block(
-              dtsi,
-              r'^[ \t]*partition@40000[ \t]*\{',
-              factory_new
+          dtsi = (
+              dtsi[:cfg_start]
+              + dtsi[cfg_end:]
           )
 
 
@@ -268,7 +272,7 @@ jobs:
 
 
           # ========================================================
-          # 3.2 修改 R4A 100M 专用 DTS
+          # 3.2 修改 R4A 100M DTS
           # ========================================================
 
           dts_path = Path(
@@ -279,13 +283,9 @@ jobs:
           dts = dts_path.read_text()
 
 
-          partitions_pattern = (
-              r'^[ \t]*&partitions[ \t]*\{'
-          )
-
           partitions_start, partitions_end = find_block(
               dts,
-              partitions_pattern
+              r'^[ \t]*&partitions[ \t]*\{'
           )
 
 
@@ -364,6 +364,7 @@ jobs:
               "factory @ 0x40000":
                   re.search(
                       r'factory:\s*partition@40000\s*\{.*?'
+                      r'label\s*=\s*"factory".*?'
                       r'reg\s*=\s*<0x40000\s+0x10000>',
                       dtsi,
                       re.S
@@ -432,7 +433,7 @@ jobs:
           print("Flash layout verification: PASSED")
           print("========================================")
           PY
-
+      
       # ============================================================
       # 4. 更新 feeds
       # ============================================================
