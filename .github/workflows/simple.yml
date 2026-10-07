@@ -1,4 +1,4 @@
-name: Build ImmortalWrt R4A 100M
+name: Simple Build ImmortalWrt R4A 100M
 
 on:
   workflow_dispatch:
