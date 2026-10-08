@@ -1,0 +1,290 @@
+name: Build Clean Padavan3
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TZ: Asia/Shanghai
+
+  # ==========================================================
+  # Main Padavan source
+  # ==========================================================
+  HAN_REPO: https://github.com/hanwckf/rt-n56u.git
+  HAN_REF: master
+
+  # ==========================================================
+  # MI-4A-100M hardware definition source
+  # ==========================================================
+  YUOS_REF: 9211808
+
+jobs:
+  build:
+    name: MI-4A-100M Custom Padavan
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    steps:
+
+      # ========================================================
+      # 1. Checkout repository
+      # ========================================================
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+
+      # ========================================================
+      # 2. Install build dependencies
+      # ========================================================
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            unzip libtool-bin curl cmake gperf gawk flex bison \
+            nano xxd fakeroot kmod cpio git python3-docutils \
+            gettext automake autopoint texinfo build-essential \
+            help2man pkg-config zlib1g-dev libgmp3-dev \
+            libmpc-dev libmpfr-dev libncurses5-dev libltdl-dev \
+            wget libc-dev-bin
+
+      # ========================================================
+      # 3. Clone hanwckf/rt-n56u
+      # ========================================================
+      - name: Clone hanwckf rt-n56u
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git clone --depth=1 --branch "${HAN_REF}" "${HAN_REPO}" rt-n56u
+          cd rt-n56u
+          git log -1 --format='Commit : %H%nDate   : %ci%nSubject: %s'
+
+      # ========================================================
+      # 4. Import MI-4A-100M hardware files
+      # ========================================================
+      - name: Import MI-4A-100M hardware files
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd rt-n56u
+          BOARD_DIR="trunk/configs/boards/MI-4A-100M"
+          mkdir -p "${BOARD_DIR}"
+          BASE_URL="https://raw.githubusercontent.com/yuos-bit/Padavan/${YUOS_REF}/trunk/configs/boards/MI-4A-100M"
+
+          curl -fL "${BASE_URL}/board.h" -o "${BOARD_DIR}/board.h"
+          curl -fL "${BASE_URL}/board.mk" -o "${BOARD_DIR}/board.mk"
+          curl -fL "${BASE_URL}/kernel-3.4.x.config" -o "${BOARD_DIR}/kernel-3.4.x.config"
+
+      # ========================================================
+      # 5. Verify hardware definition
+      # ========================================================
+      - name: Verify MI-4A-100M hardware definition
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd rt-n56u
+          BOARD_DIR="trunk/configs/boards/MI-4A-100M"
+          test -s "${BOARD_DIR}/board.h"
+          test -s "${BOARD_DIR}/board.mk"
+          test -s "${BOARD_DIR}/kernel-3.4.x.config"
+          grep -q 'BOARD_PID.*MI-4A-100M' "${BOARD_DIR}/board.h"
+
+      # ========================================================
+      # 6. Cache & Prepare toolchain
+      # ========================================================
+      - name: Cache Padavan toolchain
+        uses: actions/cache@v4
+        with:
+          path: rt-n56u/toolchain-mipsel/toolchain-3.4.x
+          key: padavan-mipsel-toolchain-v1.1
+
+      - name: Prepare toolchain
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd rt-n56u/toolchain-mipsel
+          if [ ! -d "toolchain-3.4.x" ]; then
+            sh dl_toolchain.sh
+          fi
+
+      # ========================================================
+      # 7. Create balanced firmware configuration
+      # ========================================================
+      - name: Create balanced firmware configuration
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd rt-n56u
+          SRC="trunk/configs/templates/MI-NANO.config"
+          DST="trunk/configs/templates/MI-4A-100M.config"
+          cp -f "${SRC}" "${DST}"
+
+          set_config() {
+            local key="$1"
+            local value="$2"
+            if grep -q "^${key}=" "${DST}"; then
+              sed -i -E "s|^${key}=.*$|${key}=${value}|" "${DST}"
+            else
+              printf '%s=%s\n' "${key}" "${value}" >> "${DST}"
+            fi
+          }
+
+          # ------------------------------------------------------
+          # 核心系统与网络配置
+          # ------------------------------------------------------
+          set_config CONFIG_VENDOR Ralink
+          set_config CONFIG_PRODUCT MT7628
+          set_config CONFIG_FIRMWARE_PRODUCT_ID '"MI-4A-100M"'
+          set_config CONFIG_LINUXDIR linux-3.4.x
+
+          set_config CONFIG_FIRMWARE_INCLUDE_SFE y      # 硬件NAT加速(必开)
+          set_config CONFIG_FIRMWARE_ENABLE_IPV6 y      # IPv6支持(必开)
+          set_config CONFIG_FIRMWARE_INCLUDE_IPSET y    # IPSet支持(用于高级路由规则)
+          set_config CONFIG_FIRMWARE_INCLUDE_LANG_CN y  # 中文界面
+
+          # ------------------------------------------------------
+          # Wi-Fi 驱动配置
+          # ------------------------------------------------------
+          set_config CONFIG_FIRMWARE_WIFI2_DRIVER 4.1
+          set_config CONFIG_FIRMWARE_WIFI5_DRIVER 3.0
+
+          # ------------------------------------------------------
+          # 终端、SSH 与基础系统工具
+          # 彻底移除 Dropbear，使用标准的 OpenSSH
+          # ------------------------------------------------------
+          set_config CONFIG_FIRMWARE_INCLUDE_DROPBEAR n
+          set_config CONFIG_FIRMWARE_INCLUDE_DROPBEAR_FAST_CODE n
+          set_config CONFIG_FIRMWARE_INCLUDE_DROPBEAR_ZLIB n
+          set_config CONFIG_FIRMWARE_INCLUDE_OPENSSH y
+          
+          set_config CONFIG_FIRMWARE_INCLUDE_CURL y     # CURL 脚本依赖 (引入OpenSSL底层)
+          set_config CONFIG_FIRMWARE_INCLUDE_TTYD y     # 网页终端(轻量且方便)
+          set_config CONFIG_FIRMWARE_INCLUDE_NANO y     # 友好文本编辑器
+          set_config CONFIG_FIRMWARE_INCLUDE_HTOP y     # 性能监控
+          set_config CONFIG_FIRMWARE_INCLUDE_IPERF3 y   # 局域网测速
+          set_config CONFIG_FIRMWARE_INCLUDE_MTR y      # 路由追踪诊断
+
+          # ------------------------------------------------------
+          # 彻底移除无用 USB 与 储存服务 (释放大量闪存和内存)
+          # ------------------------------------------------------
+          set_config CONFIG_FIRMWARE_ENABLE_USB n
+          set_config CONFIG_FIRMWARE_ENABLE_UFSD n
+          set_config CONFIG_FIRMWARE_ENABLE_FAT n
+          set_config CONFIG_FIRMWARE_ENABLE_EXFAT n
+          set_config CONFIG_FIRMWARE_ENABLE_EXT2 n
+          set_config CONFIG_FIRMWARE_ENABLE_EXT3 n
+          set_config CONFIG_FIRMWARE_ENABLE_EXT4 n
+          set_config CONFIG_FIRMWARE_ENABLE_XFS n
+          set_config CONFIG_FIRMWARE_ENABLE_FUSE n
+          set_config CONFIG_FIRMWARE_ENABLE_SWAP n
+          set_config CONFIG_FIRMWARE_INCLUDE_UVC n
+          set_config CONFIG_FIRMWARE_INCLUDE_HID n
+          set_config CONFIG_FIRMWARE_INCLUDE_SERIAL n
+          set_config CONFIG_FIRMWARE_INCLUDE_AUDIO n
+          set_config CONFIG_FIRMWARE_INCLUDE_LPRD n
+          set_config CONFIG_FIRMWARE_INCLUDE_U2EC n
+
+          set_config CONFIG_FIRMWARE_INCLUDE_SMBD n
+          set_config CONFIG_FIRMWARE_INCLUDE_SMBD36 n
+          set_config CONFIG_FIRMWARE_INCLUDE_WINS n
+          set_config CONFIG_FIRMWARE_INCLUDE_SMBD_SYSLOG n
+          set_config CONFIG_FIRMWARE_INCLUDE_FTPD n
+          set_config CONFIG_FIRMWARE_INCLUDE_NFSD n
+          set_config CONFIG_FIRMWARE_INCLUDE_NFSC n
+          set_config CONFIG_FIRMWARE_INCLUDE_CIFS n
+
+          # ------------------------------------------------------
+          # 移除媒体中心与离线下载 (64M 内存跑不动)
+          # ------------------------------------------------------
+          set_config CONFIG_FIRMWARE_INCLUDE_MINIDLNA n
+          set_config CONFIG_FIRMWARE_INCLUDE_FIREFLY n
+          set_config CONFIG_FIRMWARE_INCLUDE_FFMPEG_NEW n
+          set_config CONFIG_FIRMWARE_INCLUDE_TRANSMISSION n
+          set_config CONFIG_FIRMWARE_INCLUDE_TRANSMISSION_WEB_CONTROL n
+          set_config CONFIG_FIRMWARE_INCLUDE_ARIA n
+          set_config CONFIG_FIRMWARE_INCLUDE_ARIA_WEB_CONTROL n
+
+          # ------------------------------------------------------
+          # 移除高负载代理与验证组件
+          # ------------------------------------------------------
+          set_config CONFIG_FIRMWARE_INCLUDE_OPENVPN n
+          set_config CONFIG_FIRMWARE_INCLUDE_WIREGUARD n
+          set_config CONFIG_FIRMWARE_INCLUDE_SCUTCLIENT n
+          set_config CONFIG_FIRMWARE_INCLUDE_GDUT_DRCOM n
+          set_config CONFIG_FIRMWARE_INCLUDE_DOGCOM n
+          set_config CONFIG_FIRMWARE_INCLUDE_MINIEAP n
+          set_config CONFIG_FIRMWARE_INCLUDE_NJIT_CLIENT n
+          set_config CONFIG_FIRMWARE_INCLUDE_MENTOHUST n
+
+          # ------------------------------------------------------
+          # 保留/剔除的小型组件
+          # ------------------------------------------------------
+          set_config CONFIG_FIRMWARE_INCLUDE_VLMCSD n   # 移除 KMS 服务器
+          set_config CONFIG_FIRMWARE_INCLUDE_FRPC y     # 内网穿透 (仅保留客户端)
+
+          echo "=================================================="
+          echo "PROJECT CONFIG CHECK: PASS"
+          echo "=================================================="
+
+      # ========================================================
+      # 8. Create CI-safe build script (Interactive fallback)
+      # ========================================================
+      - name: Create CI-safe build script
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd rt-n56u
+          cp -f trunk/build_firmware_modify trunk/build_firmware_ci
+
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("trunk/build_firmware_ci")
+          text = path.read_text()
+          marker = 'echo --------------------------MAKE-DEP--------------------------------'
+          insert = r'''
+          echo ----------------------KCONFIG-NORMALIZE-------------------------
+          KCONFIG_BACKUP="$kernel_tf.pre-olddefconfig"
+          cp -f "$kernel_tf" "$KCONFIG_BACKUP"
+
+          if make olddefconfig; then
+              echo "make olddefconfig: OK"
+          else
+              cp -f "$KCONFIG_BACKUP" "$kernel_tf"
+              yes "" | make oldconfig
+          fi
+          '''
+          if marker not in text:
+              raise SystemExit("ERROR: build_firmware_modify structure changed.")
+          if "KCONFIG-NORMALIZE" not in text:
+              text = text.replace(marker, insert + "\n" + marker, 1)
+          path.write_text(text)
+          PY
+
+          chmod +x trunk/build_firmware_ci
+
+      # ========================================================
+      # 9. Build Firmware
+      # ========================================================
+      - name: Build MI-4A-100M firmware
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd rt-n56u/trunk
+          rm -rf images romfs
+          fakeroot ./build_firmware_ci MI-4A-100M
+
+      # ========================================================
+      # 10. Upload Final Outputs
+      # ========================================================
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: Padavan-MI-4A-100M-BALANCED
+          path: |
+            rt-n56u/trunk/images/*.trx
+            rt-n56u/trunk/configs/templates/MI-4A-100M.config
+            rt-n56u/trunk/configs/boards/MI-4A-100M/board.h
+            rt-n56u/trunk/configs/boards/MI-4A-100M/kernel-3.4.x.config
+          if-no-files-found: error
