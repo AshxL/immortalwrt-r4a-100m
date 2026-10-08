@@ -331,20 +331,13 @@ jobs:
             | head -20
 
       # ========================================================
-      # 8. Create clean MI-4A-100M project configuration
+      # 8. Create clean MI-4A-100M configuration
       #
       # Base:
-      # hanwckf MI-NANO.config
+      #   hanwckf's native MI-NANO MT7628 template
       #
-      # Then:
-      # - all optional INCLUDE_* -> n
-      # - SFE                    -> y
-      # - Chinese WebUI          -> y
-      # - Dropbear SSH           -> y
-      # - OpenSSH                 -> n
-      # - IPv6                    -> y
-      # - WiFi 2.4G               -> 4.1
-      # - WiFi 5G                 -> 3.0
+      # We DO NOT erase all CONFIG_FIRMWARE_INCLUDE_* entries.
+      # Only explicitly known optional components are disabled.
       # ========================================================
       - name: Create clean firmware configuration
         shell: bash
@@ -361,31 +354,8 @@ jobs:
           cp -f "${SRC}" "${DST}"
 
           # ------------------------------------------------------
-          # Disable every CONFIG_FIRMWARE_INCLUDE_* option that
-          # exists in hanwckf's template.
-          #
-          # This prevents inherited optional programs such as:
-          # samba, aria2, transmission, VPNs, curl, ttyd, htop,
-          # campus clients, etc.
-          # ------------------------------------------------------
-          sed -i -E \
-            's/^CONFIG_FIRMWARE_INCLUDE_[A-Za-z0-9_]+=.*$/CONFIG_FIRMWARE_INCLUDE_PLACEHOLDER=n/' \
-            "${DST}"
-
-          # Remove duplicate placeholder lines created above.
-          awk '
-            BEGIN { seen=0 }
-            /^CONFIG_FIRMWARE_INCLUDE_PLACEHOLDER=n$/ {
-              if (seen == 1) next
-              seen=1
-            }
-            { print }
-          ' "${DST}" > "${DST}.tmp"
-
-          mv "${DST}.tmp" "${DST}"
-
-          # ------------------------------------------------------
-          # Helper: replace an option or append it.
+          # Helper:
+          # replace an existing CONFIG option, or append it.
           # ------------------------------------------------------
           set_config() {
             local key="$1"
@@ -409,19 +379,36 @@ jobs:
           set_config CONFIG_LINUXDIR linux-3.4.x
 
           # ------------------------------------------------------
-          # Core Padavan networking
+          # Core networking
           # ------------------------------------------------------
           set_config CONFIG_FIRMWARE_INCLUDE_SFE y
           set_config CONFIG_FIRMWARE_ENABLE_IPV6 y
 
           # ------------------------------------------------------
-          # 2.4 GHz / 5 GHz
+          # Wireless
+          # Xiaomi Mi 4A 100M:
+          #   2.4 GHz = MT7628
+          #   5 GHz   = MT7612E
           # ------------------------------------------------------
           set_config CONFIG_FIRMWARE_WIFI2_DRIVER 4.1
           set_config CONFIG_FIRMWARE_WIFI5_DRIVER 3.0
 
           # ------------------------------------------------------
+          # Chinese WebUI
+          # ------------------------------------------------------
+          set_config CONFIG_FIRMWARE_INCLUDE_LANG_CN y
+
+          # ------------------------------------------------------
+          # SSH
+          # Keep Dropbear, do not include OpenSSH.
+          # ------------------------------------------------------
+          set_config CONFIG_FIRMWARE_INCLUDE_DROPBEAR y
+          set_config CONFIG_FIRMWARE_INCLUDE_DROPBEAR_FAST_CODE n
+          set_config CONFIG_FIRMWARE_INCLUDE_OPENSSH n
+
+          # ------------------------------------------------------
           # No USB
+          # MI-4A 100M has no USB port.
           # ------------------------------------------------------
           set_config CONFIG_FIRMWARE_ENABLE_USB n
           set_config CONFIG_FIRMWARE_ENABLE_UFSD n
@@ -435,52 +422,77 @@ jobs:
           set_config CONFIG_FIRMWARE_ENABLE_SWAP n
 
           # ------------------------------------------------------
-          # WebUI language
+          # No USB peripherals
           # ------------------------------------------------------
-          set_config CONFIG_FIRMWARE_INCLUDE_LANG_CN y
+          set_config CONFIG_FIRMWARE_INCLUDE_UVC n
+          set_config CONFIG_FIRMWARE_INCLUDE_HID n
+          set_config CONFIG_FIRMWARE_INCLUDE_SERIAL n
+          set_config CONFIG_FIRMWARE_INCLUDE_AUDIO n
+          set_config CONFIG_FIRMWARE_INCLUDE_LPRD n
+          set_config CONFIG_FIRMWARE_INCLUDE_U2EC n
 
           # ------------------------------------------------------
-          # SSH:
-          # Keep ONLY Dropbear.
+          # No diagnostic / disk utilities
           # ------------------------------------------------------
-          set_config CONFIG_FIRMWARE_INCLUDE_DROPBEAR y
-          set_config CONFIG_FIRMWARE_INCLUDE_DROPBEAR_FAST_CODE n
-          set_config CONFIG_FIRMWARE_INCLUDE_OPENSSH n
-
-          # ------------------------------------------------------
-          # Explicitly disable major optional software.
-          # ------------------------------------------------------
-          set_config CONFIG_FIRMWARE_INCLUDE_IPSET n
-
           set_config CONFIG_FIRMWARE_INCLUDE_TCPDUMP n
           set_config CONFIG_FIRMWARE_INCLUDE_HDPARM n
           set_config CONFIG_FIRMWARE_INCLUDE_PARTED n
 
+          # ------------------------------------------------------
+          # No file sharing
+          # ------------------------------------------------------
           set_config CONFIG_FIRMWARE_INCLUDE_SMBD n
           set_config CONFIG_FIRMWARE_INCLUDE_SMBD36 n
           set_config CONFIG_FIRMWARE_INCLUDE_WINS n
           set_config CONFIG_FIRMWARE_INCLUDE_SMBD_SYSLOG n
           set_config CONFIG_FIRMWARE_INCLUDE_FTPD n
 
-          set_config CONFIG_FIRMWARE_INCLUDE_EAP_PEAP n
-          set_config CONFIG_FIRMWARE_INCLUDE_HTTPS n
-          set_config CONFIG_FIRMWARE_INCLUDE_SFTP n
+          # ------------------------------------------------------
+          # No NFS / CIFS
+          # ------------------------------------------------------
+          set_config CONFIG_FIRMWARE_INCLUDE_NFSD n
+          set_config CONFIG_FIRMWARE_INCLUDE_NFSC n
+          set_config CONFIG_FIRMWARE_INCLUDE_CIFS n
 
+          # ------------------------------------------------------
+          # No QoS extras
+          # ------------------------------------------------------
+          set_config CONFIG_FIRMWARE_INCLUDE_QOS n
+          set_config CONFIG_FIRMWARE_INCLUDE_IMQ n
+          set_config CONFIG_FIRMWARE_INCLUDE_IFB n
+
+          # ------------------------------------------------------
+          # No IPSet
+          # ------------------------------------------------------
+          set_config CONFIG_FIRMWARE_INCLUDE_IPSET n
+
+          # ------------------------------------------------------
+          # No VPN
+          # ------------------------------------------------------
           set_config CONFIG_FIRMWARE_INCLUDE_OPENVPN n
           set_config CONFIG_FIRMWARE_INCLUDE_OPENSSL_EC n
           set_config CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE n
+          set_config CONFIG_FIRMWARE_INCLUDE_WIREGUARD n
 
+          # ------------------------------------------------------
+          # No media services
+          # ------------------------------------------------------
           set_config CONFIG_FIRMWARE_INCLUDE_XUPNPD n
           set_config CONFIG_FIRMWARE_INCLUDE_MINIDLNA n
           set_config CONFIG_FIRMWARE_INCLUDE_FIREFLY n
           set_config CONFIG_FIRMWARE_INCLUDE_FFMPEG_NEW n
 
+          # ------------------------------------------------------
+          # No download clients
+          # ------------------------------------------------------
           set_config CONFIG_FIRMWARE_INCLUDE_TRANSMISSION n
           set_config CONFIG_FIRMWARE_INCLUDE_TRANSMISSION_WEB_CONTROL n
-
           set_config CONFIG_FIRMWARE_INCLUDE_ARIA n
           set_config CONFIG_FIRMWARE_INCLUDE_ARIA_WEB_CONTROL n
 
+          # ------------------------------------------------------
+          # No extra terminal / diagnostic utilities
+          # ------------------------------------------------------
           set_config CONFIG_FIRMWARE_INCLUDE_CURL n
           set_config CONFIG_FIRMWARE_INCLUDE_TTYD n
           set_config CONFIG_FIRMWARE_INCLUDE_LRZSZ n
@@ -491,6 +503,9 @@ jobs:
           set_config CONFIG_FIRMWARE_INCLUDE_SOCAT n
           set_config CONFIG_FIRMWARE_INCLUDE_SRELAY n
 
+          # ------------------------------------------------------
+          # No campus network clients
+          # ------------------------------------------------------
           set_config CONFIG_FIRMWARE_INCLUDE_SCUTCLIENT n
           set_config CONFIG_FIRMWARE_INCLUDE_GDUT_DRCOM n
           set_config CONFIG_FIRMWARE_INCLUDE_DOGCOM n
@@ -498,49 +513,49 @@ jobs:
           set_config CONFIG_FIRMWARE_INCLUDE_NJIT_CLIENT n
           set_config CONFIG_FIRMWARE_INCLUDE_MENTOHUST n
 
-          set_config CONFIG_FIRMWARE_INCLUDE_NAPT66 n
-          set_config CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_SERVER n
-          set_config CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_CLIENT n
-          set_config CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_CMD n
-
-          set_config CONFIG_FIRMWARE_INCLUDE_VLMCSD n
-          set_config CONFIG_FIRMWARE_INCLUDE_DUMP1090 n
-          set_config CONFIG_FIRMWARE_INCLUDE_RTL_SDR n
+          # ------------------------------------------------------
+          # No additional services / tools
+          # ------------------------------------------------------
           set_config CONFIG_FIRMWARE_INCLUDE_FRPC n
           set_config CONFIG_FIRMWARE_INCLUDE_FRPS n
           set_config CONFIG_FIRMWARE_INCLUDE_TUNSAFE n
-          set_config CONFIG_FIRMWARE_INCLUDE_WIREGUARD n
+          set_config CONFIG_FIRMWARE_INCLUDE_VLMCSD n
+          set_config CONFIG_FIRMWARE_INCLUDE_3PROXY n
+          set_config CONFIG_FIRMWARE_INCLUDE_SMARTDNS n
+          set_config CONFIG_FIRMWARE_INCLUDE_RTL_SDR n
+          set_config CONFIG_FIRMWARE_INCLUDE_DUMP1090 n
 
           # ------------------------------------------------------
-          # Print resulting configuration.
+          # Show final configuration
           # ------------------------------------------------------
           echo "=================================================="
-          echo "Final MI-4A-100M project configuration"
+          echo "FINAL MI-4A-100M CONFIG"
           echo "=================================================="
 
           cat "${DST}"
 
           # ------------------------------------------------------
-          # Basic sanity checks.
+          # Mandatory sanity checks
           # ------------------------------------------------------
-          grep -q '^CONFIG_VENDOR=Ralink$' "${DST}"
-          grep -q '^CONFIG_PRODUCT=MT7628$' "${DST}"
-          grep -q '^CONFIG_FIRMWARE_PRODUCT_ID="MI-4A-100M"$' "${DST}"
-          grep -q '^CONFIG_LINUXDIR=linux-3.4.x$' "${DST}"
+          grep -Fx 'CONFIG_VENDOR=Ralink' "${DST}"
+          grep -Fx 'CONFIG_PRODUCT=MT7628' "${DST}"
+          grep -Fx 'CONFIG_FIRMWARE_PRODUCT_ID="MI-4A-100M"' "${DST}"
+          grep -Fx 'CONFIG_LINUXDIR=linux-3.4.x' "${DST}"
 
-          grep -q '^CONFIG_FIRMWARE_INCLUDE_SFE=y$' "${DST}"
-          grep -q '^CONFIG_FIRMWARE_INCLUDE_LANG_CN=y$' "${DST}"
+          grep -Fx 'CONFIG_FIRMWARE_INCLUDE_SFE=y' "${DST}"
+          grep -Fx 'CONFIG_FIRMWARE_INCLUDE_LANG_CN=y' "${DST}"
 
-          grep -q '^CONFIG_FIRMWARE_INCLUDE_DROPBEAR=y$' "${DST}"
-          grep -q '^CONFIG_FIRMWARE_INCLUDE_OPENSSH=n$' "${DST}"
+          grep -Fx 'CONFIG_FIRMWARE_INCLUDE_DROPBEAR=y' "${DST}"
+          grep -Fx 'CONFIG_FIRMWARE_INCLUDE_OPENSSH=n' "${DST}"
 
-          grep -q '^CONFIG_FIRMWARE_WIFI2_DRIVER=4.1$' "${DST}"
-          grep -q '^CONFIG_FIRMWARE_WIFI5_DRIVER=3.0$' "${DST}"
+          grep -Fx 'CONFIG_FIRMWARE_WIFI2_DRIVER=4.1' "${DST}"
+          grep -Fx 'CONFIG_FIRMWARE_WIFI5_DRIVER=3.0' "${DST}"
 
-          grep -q '^CONFIG_FIRMWARE_ENABLE_USB=n$' "${DST}"
+          grep -Fx 'CONFIG_FIRMWARE_ENABLE_USB=n' "${DST}"
 
-          # No accidental placeholder should remain.
-          ! grep -q '^CONFIG_FIRMWARE_INCLUDE_PLACEHOLDER=' "${DST}"
+          echo "=================================================="
+          echo "PROJECT CONFIG CHECK: PASS"
+          echo "=================================================="
 
       # ========================================================
       # 9. Patch a TEMPORARY copy of build_firmware_modify
