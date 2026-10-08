@@ -7,27 +7,51 @@ permissions:
   contents: read
 
 env:
-  DEBIAN_FRONTEND: noninteractive
   TZ: Asia/Shanghai
+
+  # ==========================================================
+  # Main Padavan source
+  # ==========================================================
+  HAN_REPO: https://github.com/hanwckf/rt-n56u.git
+  HAN_REF: master
+
+  # ==========================================================
+  # MI-4A-100M hardware definition source
+  #
+  # IMPORTANT:
+  # This is NOT the Padavan source tree.
+  # Only 3 hardware files are imported.
+  #
+  # 9211808 is a fixed yuos-bit commit containing the
+  # MI-4A-100M board definition.
+  # ==========================================================
+  YUOS_REF: 9211808
 
 jobs:
   build:
-    name: MI-4A-100M / hanwckf rt-n56u
+    name: MI-4A-100M Clean Padavan
     runs-on: ubuntu-22.04
+    timeout-minutes: 60
 
     steps:
 
-      # ==========================================================
-      # 1. Install build dependencies
-      # ==========================================================
-      - name: Install dependencies
+      # ========================================================
+      # 1. Checkout only YOUR workflow repository
+      # ========================================================
+      - name: Checkout workflow repository
+        uses: actions/checkout@v4
+
+      # ========================================================
+      # 2. Install official hanwckf build dependencies
+      # ========================================================
+      - name: Install build dependencies
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           sudo apt-get update
 
-          sudo apt-get install -y \
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             unzip \
             libtool-bin \
             curl \
@@ -59,48 +83,41 @@ jobs:
             wget \
             libc-dev-bin
 
-      # ==========================================================
-      # 2. Clone ONLY hanwckf/rt-n56u
-      #
-      # This is the actual Padavan source base.
-      # ==========================================================
-      - name: Clone hanwckf Padavan
+      # ========================================================
+      # 3. Clone hanwckf/rt-n56u automatically
+      # ========================================================
+      - name: Clone hanwckf rt-n56u
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           git clone \
             --depth=1 \
-            https://github.com/hanwckf/rt-n56u.git \
+            --branch "${HAN_REF}" \
+            "${HAN_REPO}" \
             rt-n56u
 
           cd rt-n56u
 
           echo "=================================================="
-          echo "hanwckf/rt-n56u revision"
+          echo "hanwckf/rt-n56u"
           echo "=================================================="
 
-          git log -1 --format='%H%n%ci%n%s'
+          git log -1 --format='Commit : %H%nDate   : %ci%nSubject: %s'
 
-      # ==========================================================
-      # 3. Import ONLY Xiaomi Mi 4A 100M hardware definitions
+      # ========================================================
+      # 4. Import ONLY MI-4A-100M board hardware files
       #
-      # Source:
-      # yuos-bit/Padavan
+      # board.h
+      # board.mk
+      # kernel-3.4.x.config
       #
-      # We DO NOT use yuos-bit as the firmware source.
-      # We only take:
-      #
-      #   board.h
-      #   board.mk
-      #   kernel-3.4.x.config
-      #
-      # These are the hardware-specific definitions.
-      # ==========================================================
-      - name: Import MI-4A-100M hardware support
+      # No yuos source tree is used.
+      # ========================================================
+      - name: Import MI-4A-100M hardware files
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           cd rt-n56u
 
@@ -108,7 +125,7 @@ jobs:
 
           mkdir -p "${BOARD_DIR}"
 
-          BASE_URL="https://raw.githubusercontent.com/yuos-bit/Padavan/master/trunk/configs/boards/MI-4A-100M"
+          BASE_URL="https://raw.githubusercontent.com/yuos-bit/Padavan/${YUOS_REF}/trunk/configs/boards/MI-4A-100M"
 
           curl -fL \
             "${BASE_URL}/board.h" \
@@ -123,473 +140,867 @@ jobs:
             -o "${BOARD_DIR}/kernel-3.4.x.config"
 
           echo "=================================================="
-          echo "Imported MI-4A-100M hardware files"
+          echo "Imported files"
           echo "=================================================="
 
-          ls -lh "${BOARD_DIR}"
+          ls -lah "${BOARD_DIR}"
 
-      # ==========================================================
-      # 4. Verify the imported hardware definition
-      # ==========================================================
-      - name: Verify MI-4A-100M hardware
+      # ========================================================
+      # 5. Verify MI-4A-100M hardware definition
+      # ========================================================
+      - name: Verify MI-4A-100M hardware definition
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           cd rt-n56u
 
           BOARD_DIR="trunk/configs/boards/MI-4A-100M"
 
-          test -f "${BOARD_DIR}/board.h"
-          test -f "${BOARD_DIR}/board.mk"
-          test -f "${BOARD_DIR}/kernel-3.4.x.config"
+          test -s "${BOARD_DIR}/board.h"
+          test -s "${BOARD_DIR}/board.mk"
+          test -s "${BOARD_DIR}/kernel-3.4.x.config"
 
-          grep -q 'MI-4A-100M' \
+          # -----------------------------
+          # Board identity
+          # -----------------------------
+          grep -q 'BOARD_PID.*MI-4A-100M' \
             "${BOARD_DIR}/board.h"
 
-          grep -q 'CONFIG_RALINK_MT7628=y' \
+          grep -q 'BOARD_NAME.*MI-4A-100M' \
+            "${BOARD_DIR}/board.h"
+
+          # -----------------------------
+          # Reset / LEDs
+          # -----------------------------
+          grep -q 'BOARD_GPIO_BTN_RESET.*38' \
+            "${BOARD_DIR}/board.h"
+
+          grep -q 'BOARD_GPIO_LED_WIFI.*11' \
+            "${BOARD_DIR}/board.h"
+
+          grep -q 'BOARD_GPIO_LED_POWER.*24' \
+            "${BOARD_DIR}/board.h"
+
+          # -----------------------------
+          # Wireless hardware
+          # -----------------------------
+          grep -q 'BOARD_HAS_5G_11AC.*1' \
+            "${BOARD_DIR}/board.h"
+
+          grep -q 'BOARD_NUM_ANT_5G_TX.*2' \
+            "${BOARD_DIR}/board.h"
+
+          grep -q 'BOARD_NUM_ANT_5G_RX.*2' \
+            "${BOARD_DIR}/board.h"
+
+          grep -q 'BOARD_NUM_ANT_2G_TX.*2' \
+            "${BOARD_DIR}/board.h"
+
+          grep -q 'BOARD_NUM_ANT_2G_RX.*2' \
+            "${BOARD_DIR}/board.h"
+
+          # -----------------------------
+          # Ethernet hardware
+          # -----------------------------
+          grep -q 'BOARD_NUM_ETH_EPHY.*3' \
+            "${BOARD_DIR}/board.h"
+
+          grep -q 'BOARD_HAS_EPHY_L1000.*0' \
+            "${BOARD_DIR}/board.h"
+
+          grep -q 'BOARD_HAS_EPHY_W1000.*0' \
+            "${BOARD_DIR}/board.h"
+
+          # -----------------------------
+          # No USB
+          # -----------------------------
+          grep -q 'BOARD_NUM_USB_PORTS=0' \
+            "${BOARD_DIR}/board.mk"
+
+          # -----------------------------
+          # CPU / RAM
+          # -----------------------------
+          grep -q '^CONFIG_RALINK_MT7628=y$' \
             "${BOARD_DIR}/kernel-3.4.x.config"
 
-          grep -q 'CONFIG_RT2880_DRAM_64M=y' \
+          grep -q '^CONFIG_MT7628_ASIC=y$' \
             "${BOARD_DIR}/kernel-3.4.x.config"
 
-          grep -q 'BOARD_GPIO_BTN_RESET' \
-            "${BOARD_DIR}/board.h"
+          grep -q '^CONFIG_RT2880_DRAM_64M=y$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
 
-          grep -q 'BOARD_GPIO_LED_WIFI' \
-            "${BOARD_DIR}/board.h"
+          grep -q '^CONFIG_RALINK_RAM_SIZE=64$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
 
-          grep -q 'BOARD_GPIO_LED_POWER' \
-            "${BOARD_DIR}/board.h"
+          # -----------------------------
+          # WAN/LAN mapping
+          # -----------------------------
+          grep -q '^CONFIG_RAETH_ESW_PORT_WAN=0$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
 
-          echo "MI-4A-100M hardware definition verified."
+          grep -q '^CONFIG_RAETH_ESW_PORT_LAN1=4$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
 
-      # ==========================================================
-      # 5. Create MINIMAL configuration
+          grep -q '^CONFIG_RAETH_ESW_PORT_LAN2=2$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
+
+          grep -q '^CONFIG_RAETH_ESW_PORT_LAN3=3$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
+
+          grep -q '^CONFIG_RAETH_ESW_PORT_LAN4=1$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
+
+          # -----------------------------
+          # 2.4 GHz
+          # -----------------------------
+          grep -q '^CONFIG_RT_FIRST_IF_MT7628=y$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
+
+          grep -q '^CONFIG_RT_FIRST_IF_RANGE_2GHZ=y$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
+
+          grep -q '^CONFIG_RT_FIRST_IF_EEPROM_FLASH=y$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
+
+          grep -q '^CONFIG_RT_FIRST_IF_RF_OFFSET=0x40000$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
+
+          grep -q '^CONFIG_RT_FIRST_CARD=7628$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
+
+          # -----------------------------
+          # 5 GHz MT7612E
+          # -----------------------------
+          grep -q '^CONFIG_RT_SECOND_IF_MT7612E=y$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
+
+          grep -q '^CONFIG_RT_SECOND_IF_RANGE_5GHZ=y$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
+
+          grep -q '^CONFIG_RT_SECOND_IF_EEPROM_FLASH=y$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
+
+          grep -q '^CONFIG_RT_SECOND_IF_RF_OFFSET=0x48000$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
+
+          grep -q '^CONFIG_RT_SECOND_CARD=7612$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
+
+          grep -q '^CONFIG_MT7628_AP=m$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
+
+          grep -q '^CONFIG_MT76X2_AP=m$' \
+            "${BOARD_DIR}/kernel-3.4.x.config"
+
+          echo "=================================================="
+          echo "MI-4A-100M hardware verification: PASS"
+          echo "=================================================="
+
+      # ========================================================
+      # 6. Cache official hanwckf prebuilt toolchain
+      # ========================================================
+      - name: Cache Padavan toolchain
+        uses: actions/cache@v4
+        with:
+          path: rt-n56u/toolchain-mipsel/toolchain-3.4.x
+          key: padavan-mipsel-toolchain-v1.1
+
+      # ========================================================
+      # 7. Download official hanwckf toolchain
       #
-      # IMPORTANT:
-      #
-      # We use hanwckf's own MI-NANO MT7628 template as the
-      # configuration skeleton instead of copying yuos-bit's
-      # 242-line MI-4A-100M configuration.
-      #
-      # Then only change the board/product ID.
-      #
-      # This keeps the configuration much closer to hanwckf's
-      # native configuration style.
-      # ==========================================================
-      - name: Create clean MI-4A-100M configuration
+      # dl_toolchain.sh currently points to:
+      # hanwckf/padavan-toolchain v1.1
+      # ========================================================
+      - name: Prepare toolchain
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
+
+          cd rt-n56u/toolchain-mipsel
+
+          if [ ! -d "toolchain-3.4.x" ]; then
+            sh dl_toolchain.sh
+          else
+            echo "Toolchain restored from cache."
+          fi
+
+          test -d toolchain-3.4.x
+
+          find toolchain-3.4.x -maxdepth 2 -type f \
+            | head -20
+
+      # ========================================================
+      # 8. Create clean MI-4A-100M project configuration
+      #
+      # Base:
+      # hanwckf MI-NANO.config
+      #
+      # Then:
+      # - all optional INCLUDE_* -> n
+      # - SFE                    -> y
+      # - Chinese WebUI          -> y
+      # - Dropbear SSH           -> y
+      # - OpenSSH                 -> n
+      # - IPv6                    -> y
+      # - WiFi 2.4G               -> 4.1
+      # - WiFi 5G                 -> 3.0
+      # ========================================================
+      - name: Create clean firmware configuration
+        shell: bash
+        run: |
+          set -euxo pipefail
 
           cd rt-n56u
 
-          TEMPLATE="trunk/configs/templates/MI-NANO.config"
-          CLEAN="trunk/configs/templates/MI-4A-100M.config"
+          SRC="trunk/configs/templates/MI-NANO.config"
+          DST="trunk/configs/templates/MI-4A-100M.config"
 
-          test -f "${TEMPLATE}"
+          test -f "${SRC}"
 
-          cp "${TEMPLATE}" "${CLEAN}"
+          cp -f "${SRC}" "${DST}"
 
-          sed -i \
-            's/CONFIG_FIRMWARE_PRODUCT_ID="MI-NANO"/CONFIG_FIRMWARE_PRODUCT_ID="MI-4A-100M"/' \
-            "${CLEAN}"
+          # ------------------------------------------------------
+          # Disable every CONFIG_FIRMWARE_INCLUDE_* option that
+          # exists in hanwckf's template.
+          #
+          # This prevents inherited optional programs such as:
+          # samba, aria2, transmission, VPNs, curl, ttyd, htop,
+          # campus clients, etc.
+          # ------------------------------------------------------
+          sed -i -E \
+            's/^CONFIG_FIRMWARE_INCLUDE_[A-Za-z0-9_]+=.*$/CONFIG_FIRMWARE_INCLUDE_PLACEHOLDER=n/' \
+            "${DST}"
 
+          # Remove duplicate placeholder lines created above.
+          awk '
+            BEGIN { seen=0 }
+            /^CONFIG_FIRMWARE_INCLUDE_PLACEHOLDER=n$/ {
+              if (seen == 1) next
+              seen=1
+            }
+            { print }
+          ' "${DST}" > "${DST}.tmp"
+
+          mv "${DST}.tmp" "${DST}"
+
+          # ------------------------------------------------------
+          # Helper: replace an option or append it.
+          # ------------------------------------------------------
+          set_config() {
+            local key="$1"
+            local value="$2"
+
+            if grep -q "^${key}=" "${DST}"; then
+              sed -i -E \
+                "s|^${key}=.*$|${key}=${value}|" \
+                "${DST}"
+            else
+              printf '%s=%s\n' "${key}" "${value}" >> "${DST}"
+            fi
+          }
+
+          # ------------------------------------------------------
+          # Product / platform
+          # ------------------------------------------------------
+          set_config CONFIG_VENDOR Ralink
+          set_config CONFIG_PRODUCT MT7628
+          set_config CONFIG_FIRMWARE_PRODUCT_ID '"MI-4A-100M"'
+          set_config CONFIG_LINUXDIR linux-3.4.x
+
+          # ------------------------------------------------------
+          # Core Padavan networking
+          # ------------------------------------------------------
+          set_config CONFIG_FIRMWARE_INCLUDE_SFE y
+          set_config CONFIG_FIRMWARE_ENABLE_IPV6 y
+
+          # ------------------------------------------------------
+          # 2.4 GHz / 5 GHz
+          # ------------------------------------------------------
+          set_config CONFIG_FIRMWARE_WIFI2_DRIVER 4.1
+          set_config CONFIG_FIRMWARE_WIFI5_DRIVER 3.0
+
+          # ------------------------------------------------------
+          # No USB
+          # ------------------------------------------------------
+          set_config CONFIG_FIRMWARE_ENABLE_USB n
+          set_config CONFIG_FIRMWARE_ENABLE_UFSD n
+          set_config CONFIG_FIRMWARE_ENABLE_FAT n
+          set_config CONFIG_FIRMWARE_ENABLE_EXFAT n
+          set_config CONFIG_FIRMWARE_ENABLE_EXT2 n
+          set_config CONFIG_FIRMWARE_ENABLE_EXT3 n
+          set_config CONFIG_FIRMWARE_ENABLE_EXT4 n
+          set_config CONFIG_FIRMWARE_ENABLE_XFS n
+          set_config CONFIG_FIRMWARE_ENABLE_FUSE n
+          set_config CONFIG_FIRMWARE_ENABLE_SWAP n
+
+          # ------------------------------------------------------
+          # WebUI language
+          # ------------------------------------------------------
+          set_config CONFIG_FIRMWARE_INCLUDE_LANG_CN y
+
+          # ------------------------------------------------------
+          # SSH:
+          # Keep ONLY Dropbear.
+          # ------------------------------------------------------
+          set_config CONFIG_FIRMWARE_INCLUDE_DROPBEAR y
+          set_config CONFIG_FIRMWARE_INCLUDE_DROPBEAR_FAST_CODE n
+          set_config CONFIG_FIRMWARE_INCLUDE_OPENSSH n
+
+          # ------------------------------------------------------
+          # Explicitly disable major optional software.
+          # ------------------------------------------------------
+          set_config CONFIG_FIRMWARE_INCLUDE_IPSET n
+
+          set_config CONFIG_FIRMWARE_INCLUDE_TCPDUMP n
+          set_config CONFIG_FIRMWARE_INCLUDE_HDPARM n
+          set_config CONFIG_FIRMWARE_INCLUDE_PARTED n
+
+          set_config CONFIG_FIRMWARE_INCLUDE_SMBD n
+          set_config CONFIG_FIRMWARE_INCLUDE_SMBD36 n
+          set_config CONFIG_FIRMWARE_INCLUDE_WINS n
+          set_config CONFIG_FIRMWARE_INCLUDE_SMBD_SYSLOG n
+          set_config CONFIG_FIRMWARE_INCLUDE_FTPD n
+
+          set_config CONFIG_FIRMWARE_INCLUDE_EAP_PEAP n
+          set_config CONFIG_FIRMWARE_INCLUDE_HTTPS n
+          set_config CONFIG_FIRMWARE_INCLUDE_SFTP n
+
+          set_config CONFIG_FIRMWARE_INCLUDE_OPENVPN n
+          set_config CONFIG_FIRMWARE_INCLUDE_OPENSSL_EC n
+          set_config CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE n
+
+          set_config CONFIG_FIRMWARE_INCLUDE_XUPNPD n
+          set_config CONFIG_FIRMWARE_INCLUDE_MINIDLNA n
+          set_config CONFIG_FIRMWARE_INCLUDE_FIREFLY n
+          set_config CONFIG_FIRMWARE_INCLUDE_FFMPEG_NEW n
+
+          set_config CONFIG_FIRMWARE_INCLUDE_TRANSMISSION n
+          set_config CONFIG_FIRMWARE_INCLUDE_TRANSMISSION_WEB_CONTROL n
+
+          set_config CONFIG_FIRMWARE_INCLUDE_ARIA n
+          set_config CONFIG_FIRMWARE_INCLUDE_ARIA_WEB_CONTROL n
+
+          set_config CONFIG_FIRMWARE_INCLUDE_CURL n
+          set_config CONFIG_FIRMWARE_INCLUDE_TTYD n
+          set_config CONFIG_FIRMWARE_INCLUDE_LRZSZ n
+          set_config CONFIG_FIRMWARE_INCLUDE_HTOP n
+          set_config CONFIG_FIRMWARE_INCLUDE_NANO n
+          set_config CONFIG_FIRMWARE_INCLUDE_IPERF3 n
+          set_config CONFIG_FIRMWARE_INCLUDE_MTR n
+          set_config CONFIG_FIRMWARE_INCLUDE_SOCAT n
+          set_config CONFIG_FIRMWARE_INCLUDE_SRELAY n
+
+          set_config CONFIG_FIRMWARE_INCLUDE_SCUTCLIENT n
+          set_config CONFIG_FIRMWARE_INCLUDE_GDUT_DRCOM n
+          set_config CONFIG_FIRMWARE_INCLUDE_DOGCOM n
+          set_config CONFIG_FIRMWARE_INCLUDE_MINIEAP n
+          set_config CONFIG_FIRMWARE_INCLUDE_NJIT_CLIENT n
+          set_config CONFIG_FIRMWARE_INCLUDE_MENTOHUST n
+
+          set_config CONFIG_FIRMWARE_INCLUDE_NAPT66 n
+          set_config CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_SERVER n
+          set_config CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_CLIENT n
+          set_config CONFIG_FIRMWARE_INCLUDE_SOFTETHERVPN_CMD n
+
+          set_config CONFIG_FIRMWARE_INCLUDE_VLMCSD n
+          set_config CONFIG_FIRMWARE_INCLUDE_DUMP1090 n
+          set_config CONFIG_FIRMWARE_INCLUDE_RTL_SDR n
+          set_config CONFIG_FIRMWARE_INCLUDE_FRPC n
+          set_config CONFIG_FIRMWARE_INCLUDE_FRPS n
+          set_config CONFIG_FIRMWARE_INCLUDE_TUNSAFE n
+          set_config CONFIG_FIRMWARE_INCLUDE_WIREGUARD n
+
+          # ------------------------------------------------------
+          # Print resulting configuration.
+          # ------------------------------------------------------
           echo "=================================================="
-          echo "Base configuration:"
-          echo "hanwckf MI-NANO MT7628 template"
+          echo "Final MI-4A-100M project configuration"
           echo "=================================================="
 
-          grep '^CONFIG_' "${CLEAN}"
+          cat "${DST}"
 
-      # ==========================================================
-      # 6. Remove unnecessary optional components
+          # ------------------------------------------------------
+          # Basic sanity checks.
+          # ------------------------------------------------------
+          grep -q '^CONFIG_VENDOR=Ralink$' "${DST}"
+          grep -q '^CONFIG_PRODUCT=MT7628$' "${DST}"
+          grep -q '^CONFIG_FIRMWARE_PRODUCT_ID="MI-4A-100M"$' "${DST}"
+          grep -q '^CONFIG_LINUXDIR=linux-3.4.x$' "${DST}"
+
+          grep -q '^CONFIG_FIRMWARE_INCLUDE_SFE=y$' "${DST}"
+          grep -q '^CONFIG_FIRMWARE_INCLUDE_LANG_CN=y$' "${DST}"
+
+          grep -q '^CONFIG_FIRMWARE_INCLUDE_DROPBEAR=y$' "${DST}"
+          grep -q '^CONFIG_FIRMWARE_INCLUDE_OPENSSH=n$' "${DST}"
+
+          grep -q '^CONFIG_FIRMWARE_WIFI2_DRIVER=4.1$' "${DST}"
+          grep -q '^CONFIG_FIRMWARE_WIFI5_DRIVER=3.0$' "${DST}"
+
+          grep -q '^CONFIG_FIRMWARE_ENABLE_USB=n$' "${DST}"
+
+          # No accidental placeholder should remain.
+          ! grep -q '^CONFIG_FIRMWARE_INCLUDE_PLACEHOLDER=' "${DST}"
+
+      # ========================================================
+      # 9. Patch a TEMPORARY copy of build_firmware_modify
       #
-      # We explicitly disable optional packages which are not
-      # required by the router.
+      # We do NOT modify the hanwckf source permanently.
       #
-      # The actual kernel hardware configuration remains entirely
-      # in MI-4A-100M/kernel-3.4.x.config.
-      # ==========================================================
-      - name: Apply clean configuration
+      # The inserted step runs AFTER:
+      # - kernel config copied
+      # - board.h copied
+      # - board.mk copied
+      # - wireless Kconfigs/drivers prepared
+      # - project options applied
+      #
+      # and BEFORE:
+      # make dep
+      # make
+      #
+      # This resolves the cross-Fork Kconfig concern non-
+      # interactively.
+      # ========================================================
+      - name: Create CI-safe build script
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
+
+          cd rt-n56u
+
+          cp -f \
+            trunk/build_firmware_modify \
+            trunk/build_firmware_ci
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("trunk/build_firmware_ci")
+
+          text = path.read_text()
+
+          marker = 'echo --------------------------MAKE-DEP--------------------------------'
+
+          insert = r'''
+          echo ----------------------KCONFIG-NORMALIZE-------------------------
+
+          KCONFIG_BACKUP="$kernel_tf.pre-olddefconfig"
+
+          cp -f "$kernel_tf" "$KCONFIG_BACKUP"
+
+          if make olddefconfig; then
+              echo "make olddefconfig: OK"
+          else
+              echo "olddefconfig failed, using non-interactive oldconfig fallback"
+
+              cp -f "$KCONFIG_BACKUP" "$kernel_tf"
+
+              yes "" | make oldconfig
+
+              echo "make oldconfig fallback: OK"
+          fi
+
+          echo "----------------------KCONFIG-DIFF------------------------------"
+
+          diff -u "$KCONFIG_BACKUP" "$kernel_tf" || true
+
+          '''
+
+          if marker not in text:
+              raise SystemExit(
+                  "ERROR: build_firmware_modify structure changed; "
+                  "MAKE-DEP marker not found."
+              )
+
+          if "KCONFIG-NORMALIZE" in text:
+              raise SystemExit(
+                  "ERROR: temporary build script appears already patched."
+              )
+
+          text = text.replace(
+              marker,
+              insert + marker,
+              1
+          )
+
+          path.write_text(text)
+
+          PY
+
+          chmod +x trunk/build_firmware_ci
+
+          grep -n \
+            -A35 \
+            'KCONFIG-NORMALIZE' \
+            trunk/build_firmware_ci
+
+      # ========================================================
+      # 10. Build
+      # ========================================================
+      - name: Build MI-4A-100M firmware
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd rt-n56u/trunk
+
+          rm -rf images
+          rm -rf romfs
+
+          fakeroot ./build_firmware_ci MI-4A-100M
+
+      # ========================================================
+      # 11. Validate final kernel configuration
+      #
+      # These are the hardware-critical values that MUST NOT
+      # disappear or change during olddefconfig/oldconfig.
+      # ========================================================
+      - name: Validate final kernel configuration
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd rt-n56u
+
+          KERNEL_CONFIG="linux-3.4.x/.config"
+
+          test -s "${KERNEL_CONFIG}"
+
+          echo "=================================================="
+          echo "Final kernel hardware configuration"
+          echo "=================================================="
+
+          # CPU / RAM
+          grep -Fx 'CONFIG_RALINK_MT7628=y' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_MT7628_ASIC=y' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_RT2880_DRAM_64M=y' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_RALINK_RAM_SIZE=64' \
+            "${KERNEL_CONFIG}"
+
+          # Ethernet
+          grep -Fx 'CONFIG_RAETH=y' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_GE1_MAC_ESW=y' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_RAETH_ESW=y' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_RAETH_ESW_PORT_WAN=0' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_RAETH_ESW_PORT_LAN1=4' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_RAETH_ESW_PORT_LAN2=2' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_RAETH_ESW_PORT_LAN3=3' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_RAETH_ESW_PORT_LAN4=1' \
+            "${KERNEL_CONFIG}"
+
+          # 2.4 GHz
+          grep -Fx 'CONFIG_RT_FIRST_IF_MT7628=y' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_RT_FIRST_IF_RANGE_2GHZ=y' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_RT_FIRST_IF_EEPROM_FLASH=y' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_RT_FIRST_IF_RF_OFFSET=0x40000' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_RT_FIRST_CARD=7628' \
+            "${KERNEL_CONFIG}"
+
+          # 5 GHz
+          grep -Fx 'CONFIG_RT_SECOND_IF_MT7612E=y' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_RT_SECOND_IF_RANGE_5GHZ=y' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_RT_SECOND_IF_EEPROM_FLASH=y' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_RT_SECOND_IF_RF_OFFSET=0x48000' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_RT_SECOND_CARD=7612' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_MT7628_AP=m' \
+            "${KERNEL_CONFIG}"
+
+          grep -Fx 'CONFIG_MT76X2_AP=m' \
+            "${KERNEL_CONFIG}"
+
+          echo "=================================================="
+          echo "FINAL KERNEL HARDWARE CHECK: PASS"
+          echo "=================================================="
+
+      # ========================================================
+      # 12. Validate SSH / feature configuration
+      # ========================================================
+      - name: Validate final firmware feature configuration
+        shell: bash
+        run: |
+          set -euxo pipefail
 
           cd rt-n56u
 
           CONFIG="trunk/configs/templates/MI-4A-100M.config"
 
-          # ------------------------------------------------------
+          # -----------------------------
+          # SSH
+          # -----------------------------
+          grep -Fx \
+            'CONFIG_FIRMWARE_INCLUDE_DROPBEAR=y' \
+            "${CONFIG}"
+
+          grep -Fx \
+            'CONFIG_FIRMWARE_INCLUDE_OPENSSH=n' \
+            "${CONFIG}"
+
+          # -----------------------------
+          # Basic features
+          # -----------------------------
+          grep -Fx \
+            'CONFIG_FIRMWARE_INCLUDE_LANG_CN=y' \
+            "${CONFIG}"
+
+          grep -Fx \
+            'CONFIG_FIRMWARE_INCLUDE_SFE=y' \
+            "${CONFIG}"
+
+          grep -Fx \
+            'CONFIG_FIRMWARE_ENABLE_IPV6=y' \
+            "${CONFIG}"
+
+          # -----------------------------
+          # Wi-Fi
+          # -----------------------------
+          grep -Fx \
+            'CONFIG_FIRMWARE_WIFI2_DRIVER=4.1' \
+            "${CONFIG}"
+
+          grep -Fx \
+            'CONFIG_FIRMWARE_WIFI5_DRIVER=3.0' \
+            "${CONFIG}"
+
+          # -----------------------------
           # No USB
-          # ------------------------------------------------------
-          sed -i \
-            's/^CONFIG_FIRMWARE_ENABLE_USB=.*/CONFIG_FIRMWARE_ENABLE_USB=n/' \
+          # -----------------------------
+          grep -Fx \
+            'CONFIG_FIRMWARE_ENABLE_USB=n' \
             "${CONFIG}"
 
-          # ------------------------------------------------------
-          # No USB filesystems
-          # ------------------------------------------------------
-          sed -i \
-            's/^CONFIG_FIRMWARE_ENABLE_UFSD=.*/CONFIG_FIRMWARE_ENABLE_UFSD=n/' \
+          # -----------------------------
+          # Major optional packages must
+          # remain disabled.
+          # -----------------------------
+          grep -Fx \
+            'CONFIG_FIRMWARE_INCLUDE_ARIA=n' \
             "${CONFIG}"
 
-          sed -i \
-            's/^CONFIG_FIRMWARE_ENABLE_FAT=.*/CONFIG_FIRMWARE_ENABLE_FAT=n/' \
+          grep -Fx \
+            'CONFIG_FIRMWARE_INCLUDE_TRANSMISSION=n' \
             "${CONFIG}"
 
-          sed -i \
-            's/^CONFIG_FIRMWARE_ENABLE_EXFAT=.*/CONFIG_FIRMWARE_ENABLE_EXFAT=n/' \
+          grep -Fx \
+            'CONFIG_FIRMWARE_INCLUDE_SMBD=n' \
             "${CONFIG}"
 
-          sed -i \
-            's/^CONFIG_FIRMWARE_ENABLE_EXT2=.*/CONFIG_FIRMWARE_ENABLE_EXT2=n/' \
+          grep -Fx \
+            'CONFIG_FIRMWARE_INCLUDE_SMBD36=n' \
             "${CONFIG}"
 
-          sed -i \
-            's/^CONFIG_FIRMWARE_ENABLE_EXT3=.*/CONFIG_FIRMWARE_ENABLE_EXT3=n/' \
+          grep -Fx \
+            'CONFIG_FIRMWARE_INCLUDE_FTPD=n' \
             "${CONFIG}"
 
-          sed -i \
-            's/^CONFIG_FIRMWARE_ENABLE_EXT4=.*/CONFIG_FIRMWARE_ENABLE_EXT4=n/' \
+          grep -Fx \
+            'CONFIG_FIRMWARE_INCLUDE_OPENVPN=n' \
             "${CONFIG}"
 
-          sed -i \
-            's/^CONFIG_FIRMWARE_ENABLE_XFS=.*/CONFIG_FIRMWARE_ENABLE_XFS=n/' \
+          grep -Fx \
+            'CONFIG_FIRMWARE_INCLUDE_WIREGUARD=n' \
             "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_ENABLE_FUSE=.*/CONFIG_FIRMWARE_ENABLE_FUSE=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_ENABLE_SWAP=.*/CONFIG_FIRMWARE_ENABLE_SWAP=n/' \
-            "${CONFIG}"
-
-          # ------------------------------------------------------
-          # No USB peripherals
-          # ------------------------------------------------------
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_UVC=.*/CONFIG_FIRMWARE_INCLUDE_UVC=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_HID=.*/CONFIG_FIRMWARE_INCLUDE_HID=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_SERIAL=.*/CONFIG_FIRMWARE_INCLUDE_SERIAL=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_AUDIO=.*/CONFIG_FIRMWARE_INCLUDE_AUDIO=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_LPRD=.*/CONFIG_FIRMWARE_INCLUDE_LPRD=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_U2EC=.*/CONFIG_FIRMWARE_INCLUDE_U2EC=n/' \
-            "${CONFIG}"
-
-          # ------------------------------------------------------
-          # No QoS extras
-          # ------------------------------------------------------
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_QOS=.*/CONFIG_FIRMWARE_INCLUDE_QOS=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_IMQ=.*/CONFIG_FIRMWARE_INCLUDE_IMQ=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_IFB=.*/CONFIG_FIRMWARE_INCLUDE_IFB=n/' \
-            "${CONFIG}"
-
-          # ------------------------------------------------------
-          # No IPSet
-          # ------------------------------------------------------
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_IPSET=.*/CONFIG_FIRMWARE_INCLUDE_IPSET=n/' \
-            "${CONFIG}"
-
-          # ------------------------------------------------------
-          # No NFS / CIFS
-          # ------------------------------------------------------
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_NFSD=.*/CONFIG_FIRMWARE_INCLUDE_NFSD=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_NFSC=.*/CONFIG_FIRMWARE_INCLUDE_NFSC=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_CIFS=.*/CONFIG_FIRMWARE_INCLUDE_CIFS=n/' \
-            "${CONFIG}"
-
-          # ------------------------------------------------------
-          # No diagnostic utilities
-          # ------------------------------------------------------
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_TCPDUMP=.*/CONFIG_FIRMWARE_INCLUDE_TCPDUMP=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_HDPARM=.*/CONFIG_FIRMWARE_INCLUDE_HDPARM=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_PARTED=.*/CONFIG_FIRMWARE_INCLUDE_PARTED=n/' \
-            "${CONFIG}"
-
-          # ------------------------------------------------------
-          # No file sharing
-          # ------------------------------------------------------
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_SMBD=.*/CONFIG_FIRMWARE_INCLUDE_SMBD=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_SMBD36=.*/CONFIG_FIRMWARE_INCLUDE_SMBD36=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_WINS=.*/CONFIG_FIRMWARE_INCLUDE_WINS=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_SMBD_SYSLOG=.*/CONFIG_FIRMWARE_INCLUDE_SMBD_SYSLOG=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_FTPD=.*/CONFIG_FIRMWARE_INCLUDE_FTPD=n/' \
-            "${CONFIG}"
-
-          # ------------------------------------------------------
-          # No VPN / OpenSSL / SSH extras
-          # ------------------------------------------------------
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_OPENVPN=.*/CONFIG_FIRMWARE_INCLUDE_OPENVPN=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_OPENSSL_EC=.*/CONFIG_FIRMWARE_INCLUDE_OPENSSL_EC=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE=.*/CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_SFTP=.*/CONFIG_FIRMWARE_INCLUDE_SFTP=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_DROPBEAR=.*/CONFIG_FIRMWARE_INCLUDE_DROPBEAR=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_OPENSSH=.*/CONFIG_FIRMWARE_INCLUDE_OPENSSH=n/' \
-            "${CONFIG}"
-
-          # ------------------------------------------------------
-          # No media services
-          # ------------------------------------------------------
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_XUPNPD=.*/CONFIG_FIRMWARE_INCLUDE_XUPNPD=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_MINIDLNA=.*/CONFIG_FIRMWARE_INCLUDE_MINIDLNA=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_FIREFLY=.*/CONFIG_FIRMWARE_INCLUDE_FIREFLY=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_FFMPEG_NEW=.*/CONFIG_FIRMWARE_INCLUDE_FFMPEG_NEW=n/' \
-            "${CONFIG}"
-
-          # ------------------------------------------------------
-          # No download clients
-          # ------------------------------------------------------
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_TRANSMISSION=.*/CONFIG_FIRMWARE_INCLUDE_TRANSMISSION=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_TRANSMISSION_WEB_CONTROL=.*/CONFIG_FIRMWARE_INCLUDE_TRANSMISSION_WEB_CONTROL=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_ARIA=.*/CONFIG_FIRMWARE_INCLUDE_ARIA=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_ARIA_WEB_CONTROL=.*/CONFIG_FIRMWARE_INCLUDE_ARIA_WEB_CONTROL=n/' \
-            "${CONFIG}"
-
-          # ------------------------------------------------------
-          # No extra utilities
-          # ------------------------------------------------------
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_CURL=.*/CONFIG_FIRMWARE_INCLUDE_CURL=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_TTYD=.*/CONFIG_FIRMWARE_INCLUDE_TTYD=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_LRZSZ=.*/CONFIG_FIRMWARE_INCLUDE_LRZSZ=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_HTOP=.*/CONFIG_FIRMWARE_INCLUDE_HTOP=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_NANO=.*/CONFIG_FIRMWARE_INCLUDE_NANO=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_IPERF3=.*/CONFIG_FIRMWARE_INCLUDE_IPERF3=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_MTR=.*/CONFIG_FIRMWARE_INCLUDE_MTR=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_SOCAT=.*/CONFIG_FIRMWARE_INCLUDE_SOCAT=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_SRELAY=.*/CONFIG_FIRMWARE_INCLUDE_SRELAY=n/' \
-            "${CONFIG}"
-
-          # ------------------------------------------------------
-          # No campus-network clients
-          # ------------------------------------------------------
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_SCUTCLIENT=.*/CONFIG_FIRMWARE_INCLUDE_SCUTCLIENT=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_GDUT_DRCOM=.*/CONFIG_FIRMWARE_INCLUDE_GDUT_DRCOM=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_DOGCOM=.*/CONFIG_FIRMWARE_INCLUDE_DOGCOM=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_MINIEAP=.*/CONFIG_FIRMWARE_INCLUDE_MINIEAP=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_NJIT_CLIENT=.*/CONFIG_FIRMWARE_INCLUDE_NJIT_CLIENT=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_MENTOHUST=.*/CONFIG_FIRMWARE_INCLUDE_MENTOHUST=n/' \
-            "${CONFIG}"
-
-          # ------------------------------------------------------
-          # No miscellaneous services
-          # ------------------------------------------------------
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_NAPT66=.*/CONFIG_FIRMWARE_INCLUDE_NAPT66=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_VLMCSD=.*/CONFIG_FIRMWARE_INCLUDE_VLMCSD=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_FRPC=.*/CONFIG_FIRMWARE_INCLUDE_FRPC=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_FRPS=.*/CONFIG_FIRMWARE_INCLUDE_FRPS=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_TUNSAFE=.*/CONFIG_FIRMWARE_INCLUDE_TUNSAFE=n/' \
-            "${CONFIG}"
-
-          sed -i \
-            's/^CONFIG_FIRMWARE_INCLUDE_WIREGUARD=.*/CONFIG_FIRMWARE_INCLUDE_WIREGUARD=n/' \
-            "${CONFIG}"
-
-          # ------------------------------------------------------
-          # Keep Chinese WebUI.
-          # ------------------------------------------------------
-          grep -q '^CONFIG_FIRMWARE_INCLUDE_LANG_CN=y' "${CONFIG}"
 
           echo "=================================================="
-          echo "Final clean configuration"
+          echo "FINAL FEATURE CHECK: PASS"
           echo "=================================================="
 
-          cat "${CONFIG}"
-
-      # ==========================================================
-      # 7. Download hanwckf prebuilt toolchain
-      # ==========================================================
-      - name: Download toolchain
+      # ========================================================
+      # 13. Generate build information
+      # ========================================================
+      - name: Generate build information
         shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
-          cd rt-n56u/toolchain-mipsel
+          cd rt-n56u
 
-          sh dl_toolchain.sh
-
-      # ==========================================================
-      # 8. Build
-      # ==========================================================
-      - name: Build firmware
-        shell: bash
-        run: |
-          set -eux
-
-          cd rt-n56u/trunk
-
-          rm -rf images
-
-          fakeroot ./build_firmware_modify MI-4A-100M
-
-      # ==========================================================
-      # 9. Verify output
-      # ==========================================================
-      - name: Verify firmware
-        shell: bash
-        run: |
-          set -eux
-
-          cd rt-n56u/trunk
-
-          ls -lah images
-
-          test -n "$(find images -maxdepth 1 -type f -name '*.trx' -print -quit)"
+          {
+            echo "=============================================="
+            echo "Padavan MI-4A-100M CLEAN BUILD"
+            echo "=============================================="
+            echo
+            echo "Source repository:"
+            echo "https://github.com/hanwckf/rt-n56u"
+            echo
+            echo "hanwckf ref:"
+            echo "${HAN_REF}"
+            echo
+            echo "hanwckf commit:"
+            git rev-parse HEAD
+            echo
+            echo "hanwckf commit date:"
+            git log -1 --format='%ci'
+            echo
+            echo "hanwckf commit subject:"
+            git log -1 --format='%s'
+            echo
+            echo "MI-4A-100M hardware source:"
+            echo "https://github.com/yuos-bit/Padavan"
+            echo
+            echo "yuos hardware commit:"
+            echo "${YUOS_REF}"
+            echo
+            echo "Imported files:"
+            echo "  trunk/configs/boards/MI-4A-100M/board.h"
+            echo "  trunk/configs/boards/MI-4A-100M/board.mk"
+            echo "  trunk/configs/boards/MI-4A-100M/kernel-3.4.x.config"
+            echo
+            echo "Firmware config:"
+            echo "  trunk/configs/templates/MI-4A-100M.config"
+            echo
+            echo "SSH:"
+            grep '^CONFIG_FIRMWARE_INCLUDE_DROPBEAR=' \
+              trunk/configs/templates/MI-4A-100M.config
+            echo
+            echo "OpenSSH:"
+            grep '^CONFIG_FIRMWARE_INCLUDE_OPENSSH=' \
+              trunk/configs/templates/MI-4A-100M.config
+            echo
+            echo "IPv6:"
+            grep '^CONFIG_FIRMWARE_ENABLE_IPV6=' \
+              trunk/configs/templates/MI-4A-100M.config
+            echo
+            echo "SFE:"
+            grep '^CONFIG_FIRMWARE_INCLUDE_SFE=' \
+              trunk/configs/templates/MI-4A-100M.config
+            echo
+            echo "WiFi 2.4G driver:"
+            grep '^CONFIG_FIRMWARE_WIFI2_DRIVER=' \
+              trunk/configs/templates/MI-4A-100M.config
+            echo
+            echo "WiFi 5G driver:"
+            grep '^CONFIG_FIRMWARE_WIFI5_DRIVER=' \
+              trunk/configs/templates/MI-4A-100M.config
+            echo
+            echo "Firmware files:"
+            find trunk/images \
+              -maxdepth 1 \
+              -type f \
+              -printf '%f\n' \
+              | sort
+            echo
+            echo "SHA256:"
+            sha256sum trunk/images/*.trx
+          } > build-info.txt
 
           echo "=================================================="
-          echo "Firmware generated successfully"
+          cat build-info.txt
           echo "=================================================="
 
-          sha256sum images/*.trx
+      # ========================================================
+      # 14. Show firmware size and SHA256
+      # ========================================================
+      - name: Verify firmware output
+        shell: bash
+        run: |
+          set -euxo pipefail
 
-      # ==========================================================
-      # 10. Upload firmware
-      # ==========================================================
-      - name: Upload MI-4A-100M firmware
+          cd rt-n56u
+
+          test -d trunk/images
+
+          mapfile -t FIRMWARES < <(
+            find trunk/images \
+              -maxdepth 1 \
+              -type f \
+              -name '*.trx' \
+              -print
+          )
+
+          test "${#FIRMWARES[@]}" -ge 1
+
+          echo "=================================================="
+          echo "Firmware output"
+          echo "=================================================="
+
+          for fw in "${FIRMWARES[@]}"; do
+            echo
+            echo "File:"
+            echo "${fw}"
+
+            echo "Size:"
+            stat -c '%n : %s bytes' "${fw}"
+
+            echo "SHA256:"
+            sha256sum "${fw}"
+          done
+
+          echo
+          echo "=================================================="
+          echo "FIRMWARE BUILD: SUCCESS"
+          echo "=================================================="
+
+      # ========================================================
+      # 15. Upload firmware + configs + build information
+      # ========================================================
+      - name: Upload firmware
         uses: actions/upload-artifact@v4
         with:
           name: Padavan-MI-4A-100M-CLEAN
-          path: rt-n56u/trunk/images/*.trx
+          path: |
+            rt-n56u/trunk/images/*.trx
+            rt-n56u/trunk/configs/templates/MI-4A-100M.config
+            rt-n56u/trunk/configs/boards/MI-4A-100M/board.h
+            rt-n56u/trunk/configs/boards/MI-4A-100M/board.mk
+            rt-n56u/trunk/configs/boards/MI-4A-100M/kernel-3.4.x.config
+            rt-n56u/linux-3.4.x/.config
+            rt-n56u/build-info.txt
           if-no-files-found: error
+
+      - name: Cache
+        uses: actions/cache@v5.1.0
+        with:
+          # A list of files, directories, and wildcard patterns to cache and restore
+          path: 
+          # An explicit key for restoring and saving the cache
+          key: 
+          # An ordered multiline string listing the prefix-matched keys, that are used for restoring stale cache if no cache hit occurred for key. Note `cache-hit` returns false in this case.
+          restore-keys: # optional
+          # The chunk size used to split up large files during upload, in bytes
+          upload-chunk-size: # optional
+          # An optional boolean when enabled, allows windows runners to save or restore caches that can be restored or saved respectively on other platforms
+          enableCrossOsArchive: # optional, default is false
+          # Fail the workflow if cache entry is not found
+          fail-on-cache-miss: # optional, default is false
+          # Check if a cache entry exists for the given input(s) (key, restore-keys) without downloading the cache
+          lookup-only: # optional, default is false
+          # Run the post step to save the cache even if another step before fails
+          save-always: # optional, default is false
