@@ -405,6 +405,7 @@ jobs:
           set_config CONFIG_FIRMWARE_INCLUDE_DROPBEAR y
           set_config CONFIG_FIRMWARE_INCLUDE_DROPBEAR_FAST_CODE n
           set_config CONFIG_FIRMWARE_INCLUDE_OPENSSH n
+          set_config CONFIG_FIRMWARE_INCLUDE_DROPBEAR_ZLIB n
 
           # ------------------------------------------------------
           # No USB
