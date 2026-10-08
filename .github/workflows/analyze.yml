@@ -1,6 +1,6 @@
-name: Extract Multiple Firmware DTS
+name: Extract All Firmwares DTS Layout
 on:
-  workflow_dispatch: # 手动触发
+  workflow_dispatch: # 允许手动在 Actions 页面点击触发
 
 jobs:
   extract-dts:
@@ -9,105 +9,105 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y binwalk device-tree-compiler python3 git xz-utils
+          sudo apt-get install -y binwalk device-tree-compiler python3 xz-utils git
 
-      - name: Clone Firmware Repository
-        run: |
-          echo "正在克隆目标仓库..."
-          git clone https://github.com/kily-smith/MI-4A100M.git target_repo
+      - name: Clone Target Repository
+        # 使用 actions/checkout 克隆目标仓库
+        uses: actions/checkout@v4
+        with:
+          repository: 'kily-smith/MI-4A100M'
+          ref: 'main'
+          path: 'firmware-repo'
 
-      - name: Create DTB Extractor Script
+      - name: Unpack All Firmwares (.bin & .trx)
         run: |
-          # 创建 Python 提取脚本，支持接收目录作为参数
-          cat << 'EOF' > carve_dtb.py
-          import os, struct, sys
+          echo "正在搜索并解包所有固件..."
+          mkdir -p extracted_firmwares
           
-          def extract_dtb(directory):
+          # 在仓库目录下查找所有的 .bin 和 .trx 文件 (排除 .git 目录)
+          find ./firmware-repo -type f \( -name "*.bin" -o -name "*.trx" \) -not -path "*/\.git/*" | while read -r fw; do
+            fw_name=$(basename "$fw")
+            echo "==================================================="
+            echo "📦 发现固件: $fw_name"
+            echo "📁 所在路径: $fw"
+            
+            # 为每个固件创建独立的解包目录
+            mkdir -p "extracted_firmwares/$fw_name"
+            cp "$fw" "extracted_firmwares/$fw_name/"
+            
+            # 进入目录并静默执行递归解包 (-Me)，忽略可能出现的报错
+            cd "extracted_firmwares/$fw_name"
+            binwalk -Me "$fw_name" > /dev/null 2>&1 || true
+            cd - > /dev/null
+          done
+
+      - name: Carve DTB Files (批量精准提取)
+        run: |
+          cat << 'EOF' > carve_dtb.py
+          import os, struct
+          
+          def extract_dtb(base_dir):
               os.makedirs("dtbs", exist_ok=True)
               dtb_count = 0
-              for root, dirs, files in os.walk(directory):
+              
+              # 遍历解包后的所有文件
+              for root, dirs, files in os.walk(base_dir):
                   for file in files:
                       filepath = os.path.join(root, file)
                       if os.path.islink(filepath) or not os.path.isfile(filepath): continue
+                      
                       try:
                           with open(filepath, 'rb') as f: data = f.read()
-                          magic = b'\xd0\x0d\xfe\xed' # DTB 魔数
+                          magic = b'\xd0\x0d\xfe\xed' # 设备树 DTB 文件头魔数
                           idx = 0
                           while True:
                               idx = data.find(magic, idx)
                               if idx == -1: break
                               if idx + 8 <= len(data):
                                   size = struct.unpack('>I', data[idx+4:idx+8])[0]
-                                  # 过滤大小 (1KB ~ 2MB)
-                                  if 1024 < size < 2097152: 
-                                      dtb_path = f"dtbs/extracted_{dtb_count}.dtb"
+                                  # 大小过滤，通常 DTB 在 1KB - 2MB 之间
+                                  if 1024 < size < 2097152:
+                                      # 尝试从路径中解析出它属于哪个固件
+                                      parts = os.path.normpath(filepath).split(os.sep)
+                                      fw_name = parts[1] if len(parts) > 1 else "unknown"
+                                      
+                                      dtb_path = f"dtbs/{fw_name}_extract_{dtb_count}.dtb"
                                       with open(dtb_path, 'wb') as out_f:
                                           out_f.write(data[idx:idx+size])
-                                      print(f"  ✅ [DTB 发现] 文件: {filepath} | 偏移: {hex(idx)} | 大小: {size} 字节")
+                                      print(f"✅ 从 [{fw_name}] 提取出 DTB (大小: {size} 字节, 偏移: {hex(idx)})")
                                       dtb_count += 1
                               idx += 4
                       except Exception as e:
                           pass
-              return dtb_count
           
-          if __name__ == "__main__":
-              target_dir = sys.argv[1] if len(sys.argv) > 1 else "."
-              count = extract_dtb(target_dir)
-              if count == 0:
-                  print("  ❌ 未找到任何 DTB 文件。")
+          extract_dtb("extracted_firmwares")
           EOF
+          python3 carve_dtb.py
 
-      - name: Process All Bin Files
+      - name: Decompile DTB to DTS and Extract Layout
         run: |
-          mkdir -p all_dts_outputs
-          
-          # 查找仓库下的所有 .bin 文件并循环处理 (支持带有空格的中文文件名)
-          find target_repo -type f -name "*.bin" | while read -r bin_file; do
-            filename=$(basename "$bin_file")
-            echo -e "\n========================================================================"
-            echo "🚀 正在处理固件: $filename"
-            echo "========================================================================"
-            
-            # 为每个固件创建一个独立的工作目录，防止解包文件互相干扰
-            # 使用 md5 哈希作为目录名防止文件名特殊字符导致错误
-            safe_dir="workdir_$(echo "$filename" | md5sum | awk '{print $1}')"
-            mkdir -p "$safe_dir"
-            cp "$bin_file" "$safe_dir/"
-            
-            pushd "$safe_dir" > /dev/null
-            
-            echo "📦 步骤 1/3: 正在使用 binwalk 递归解包..."
-            binwalk -Me "$filename" > /dev/null 2>&1 || true
-            
-            echo "🔍 步骤 2/3: 正在扫描并提取设备树 DTB..."
-            python3 ../carve_dtb.py .
-            
-            echo "📜 步骤 3/3: 反编译 DTB 为 DTS 并提取闪存布局..."
-            if [ -d "dtbs" ] && [ "$(ls -A dtbs 2>/dev/null)" ]; then
-              for dtb in dtbs/*.dtb; do
-                dtb_base=$(basename "$dtb" .dtb)
-                # 为输出的 dts 文件添加当前 bin 文件的名字作为前缀，方便区分
-                dts_name="${filename}_${dtb_base}.dts"
-                dts_path="../all_dts_outputs/${dts_name}"
-                
-                # dtc 反编译
-                dtc -I dtb -O dts -o "$dts_path" "$dtb" 2>/dev/null || true
-                
-                echo -e "\n---------------------------------------------------"
-                echo "👉 [$filename] 的闪存布局 (Partition Layout):"
-                # 过滤输出 partition 相关内容供日志预览
-                grep -A 40 -B 2 -i "partition" "$dts_path" || echo "  ⚠️ 未找到 partition 节点"
-                echo "---------------------------------------------------"
-              done
-            else
-              echo "  ❌ 该固件中没有提取到有效的设备树信息。"
-            fi
-            
-            popd > /dev/null
-          done
+          mkdir -p dts_output
+          if [ -d "dtbs" ] && [ "$(ls -A dtbs)" ]; then
+            for dtb in dtbs/*.dtb; do
+              base=$(basename "$dtb" .dtb)
+              dts_file="dts_output/${base}.dts"
+              
+              echo "==================================================="
+              echo "🔄 正在反编译: $base.dtb"
+              dtc -I dtb -O dts -o "$dts_file" "$dtb" 2>/dev/null || true
+              
+              echo "👉 [$base] 的闪存分区布局 (Flash Layout):"
+              # 过滤打印分区信息块
+              grep -A 40 -B 2 -i "partition" "$dts_file" || echo "  未找到典型的 partitions 节点。"
+            done
+            echo "==================================================="
+          else
+            echo "❌ 未能在任何固件中提取到 DTB 文件！"
+            exit 1
+          fi
 
-      - name: Upload All DTS Artifacts
+      - name: Upload DTS Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: all-firmwares-dts
-          path: all_dts_outputs/*.dts
+          path: dts_output/*.dts
