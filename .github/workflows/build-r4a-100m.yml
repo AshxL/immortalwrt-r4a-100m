@@ -1,0 +1,496 @@
+name: Build ImmortalWrt - Xiaomi Mi Router 4A 100M
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMMORTALWRT_REF: v21.02.7
+  TARGET_BOARD: ramips
+  TARGET_SUBTARGET: mt76x8
+  TARGET_DEVICE: xiaomi_mi-router-4a-100m
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      # ============================================================
+      # 1. Checkout 当前仓库
+      # ============================================================
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ============================================================
+      # 2. 安装完整编译依赖
+      # ============================================================
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -eux
+
+          sudo apt-get update
+
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            ack \
+            antlr3 \
+            asciidoc \
+            autoconf \
+            automake \
+            autopoint \
+            bison \
+            build-essential \
+            bzip2 \
+            ccache \
+            clang \
+            cmake \
+            cpio \
+            curl \
+            device-tree-compiler \
+            ecj \
+            fastjar \
+            flex \
+            gawk \
+            gcc-multilib \
+            gettext \
+            genisoimage \
+            git \
+            g++-multilib \
+            lib32gcc-dev \
+            libc6-dev-i386 \
+            libelf-dev \
+            libffi-dev \
+            libglib2.0-dev \
+            libgmp-dev \
+            libgnutls28-dev \
+            libncurses-dev \
+            libncurses5-dev \
+            libpython3-dev \
+            libreadline-dev \
+            libssl-dev \
+            libtool \
+            libyaml-dev \
+            lld \
+            llvm \
+            make \
+            ninja-build \
+            p7zip \
+            p7zip-full \
+            patch \
+            pkgconf \
+            python3 \
+            python3-distutils \
+            python3-pip \
+            python3-ply \
+            python3-docutils \
+            python3-pyelftools \
+            qemu-utils \
+            rsync \
+            scons \
+            squashfs-tools \
+            subversion \
+            swig \
+            texinfo \
+            unzip \
+            wget \
+            xsltproc \
+            zlib1g-dev
+
+      # ============================================================
+      # 3. CCache
+      # ============================================================
+      - name: Configure ccache
+        shell: bash
+        run: |
+          set -eux
+
+          mkdir -p "${HOME}/.ccache"
+
+          ccache --set-config=max_size=5G
+          ccache --set-config=compression=true
+
+          echo "CCACHE_DIR=${HOME}/.ccache" >> "${GITHUB_ENV}"
+
+      - name: Restore build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.ccache
+            immortalwrt/dl
+          key: immortalwrt-r4a-100m-${{ env.IMMORTALWRT_REF }}-${{ runner.os }}-${{ hashFiles('.github/workflows/build-r4a-100m.yml') }}
+          restore-keys: |
+            immortalwrt-r4a-100m-${{ env.IMMORTALWRT_REF }}-${{ runner.os }}-
+
+      # ============================================================
+      # 4. 下载官方 ImmortalWrt v21.02.7
+      # ============================================================
+      - name: Clone ImmortalWrt
+        shell: bash
+        run: |
+          set -eux
+
+          git clone \
+            --depth 1 \
+            --branch "${IMMORTALWRT_REF}" \
+            https://github.com/immortalwrt/immortalwrt.git \
+            immortalwrt
+
+          cd immortalwrt
+
+          echo "ImmortalWrt commit:"
+          git rev-parse HEAD
+
+          echo
+          echo "ImmortalWrt version:"
+          git describe --tags --always --dirty
+
+      # ============================================================
+      # 5. 强制写入小米 4A 100M 实测可启动的 Flash 分区
+      #
+      # 实际布局：
+      #
+      # 0x000000 - 0x030000 : u-boot       192 KB
+      # 0x030000 - 0x040000 : u-boot-env    64 KB
+      # 0x040000 - 0x050000 : factory       64 KB
+      # 0x050000 - 0x1000000: firmware   16064 KB
+      #
+      # 同时保留 factory 内部的 NVMEM：
+      #   - WiFi EEPROM
+      #   - MAC address
+      # ============================================================
+      - name: Patch Xiaomi Mi Router 4A 100M DTS
+        shell: bash
+        working-directory: immortalwrt
+        run: |
+          set -eux
+
+          export DTS_FILE="target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4.dtsi"
+          export DEVICE_DTS="target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4a-100m.dts"
+
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          import os
+
+          dtsi = Path(os.environ["DTS_FILE"])
+          device_dts = Path(os.environ["DEVICE_DTS"])
+
+          # ----------------------------------------------------------
+          # 修改基础 dtsi 中的 SPI Flash / partition 定义
+          # ----------------------------------------------------------
+          text = dtsi.read_text(encoding="utf-8")
+
+          new_spi_block = r'''&spi0 {
+          status = "okay";
+
+          flash0: flash@0 {
+              compatible = "jedec,spi-nor";
+              reg = <0x00>;
+              spi-max-frequency = <40000000>;
+
+              partitions: partitions {
+                  compatible = "fixed-partitions";
+                  #address-cells = <1>;
+                  #size-cells = <1>;
+
+                  partition@0 {
+                      label = "u-boot";
+                      reg = <0x00 0x30000>;
+                      read-only;
+                  };
+
+                  partition@30000 {
+                      label = "u-boot-env";
+                      reg = <0x30000 0x10000>;
+                  };
+
+                  factory: partition@40000 {
+                      label = "factory";
+                      reg = <0x40000 0x10000>;
+                      read-only;
+
+                      nvmem-layout {
+                          compatible = "fixed-layout";
+                          #address-cells = <1>;
+                          #size-cells = <1>;
+
+                          eeprom_factory_0: eeprom@0 {
+                              reg = <0x0 0x400>;
+                          };
+
+                          eeprom_factory_8000: eeprom@8000 {
+                              reg = <0x8000 0x200>;
+                          };
+
+                          macaddr_factory_4: macaddr@4 {
+                              compatible = "mac-base";
+                              reg = <0x4 0x6>;
+                              #nvmem-cell-cells = <1>;
+                          };
+
+                          macaddr_factory_28: macaddr@28 {
+                              reg = <0x28 0x6>;
+                          };
+                      };
+                  };
+
+                  partition@50000 {
+                      label = "firmware";
+                      reg = <0x50000 0xfb0000>;
+                      compatible = "denx,uimage";
+                  };
+              };
+          };
+          '''
+
+          pattern = re.compile(
+              r'&spi0\s*\{.*?\n\};\n\n&state_default\s*\{',
+              re.DOTALL
+          )
+
+          text_new, count = pattern.subn(
+              new_spi_block + "\n\n&state_default {",
+              text,
+              count=1
+          )
+
+          if count != 1:
+              raise SystemExit(
+                  "ERROR: 无法唯一定位官方 dtsi 的 &spi0 分区块，"
+                  "为避免误修改源码，停止编译。"
+              )
+
+          dtsi.write_text(text_new, encoding="utf-8")
+
+          # ----------------------------------------------------------
+          # 删除设备 DTS 原来的错误/旧的 &partitions 覆盖
+          #
+          # 因为真正的 firmware 分区已经放进基础 dtsi。
+          # ----------------------------------------------------------
+          text = device_dts.read_text(encoding="utf-8")
+
+          pattern = re.compile(
+              r'\n&partitions\s*\{.*?\n\};\n',
+              re.DOTALL
+          )
+
+          text_new, count = pattern.subn("\n", text, count=1)
+
+          if count != 1:
+              raise SystemExit(
+                  "ERROR: 无法唯一定位设备 DTS 中的 &partitions 块，"
+                  "为避免产生错误分区表，停止编译。"
+              )
+
+          device_dts.write_text(text_new, encoding="utf-8")
+          PY
+
+          # ==========================================================
+          # 严格验证源码中的分区布局
+          # ==========================================================
+          echo
+          echo "===== VERIFY DTS FLASH LAYOUT ====="
+
+          grep -q 'spi-max-frequency = <40000000>;' \
+            target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4.dtsi
+
+          grep -q 'label = "u-boot";' \
+            target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4.dtsi
+
+          grep -q 'reg = <0x00 0x30000>;' \
+            target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4.dtsi
+
+          grep -q 'label = "u-boot-env";' \
+            target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4.dtsi
+
+          grep -q 'reg = <0x30000 0x10000>;' \
+            target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4.dtsi
+
+          grep -q 'factory: partition@40000' \
+            target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4.dtsi
+
+          grep -q 'reg = <0x40000 0x10000>;' \
+            target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4.dtsi
+
+          grep -q 'partition@50000' \
+            target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4.dtsi
+
+          grep -q 'reg = <0x50000 0xfb0000>;' \
+            target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4.dtsi
+
+          echo
+          echo "===== FINAL FLASH PARTITION BLOCK ====="
+
+          sed -n '/&spi0 {/,/};$/p' \
+            target/linux/ramips/dts/mt7628an_xiaomi_mi-router-4.dtsi \
+            | head -n 90
+
+          echo
+          echo "DTS partition layout verification: PASS"
+
+      # ============================================================
+      # 6. 设置最干净的基础配置
+      #
+      # 保留：
+      #   - 基础系统
+      #   - BusyBox
+      #   - Dropbear SSH
+      #   - dnsmasq
+      #   - Firewall
+      #   - DHCP
+      #   - MT76 WiFi 驱动
+      #   - LuCI 基础管理界面
+      #
+      # 不加入：
+      #   OpenClash / Passwall / AdGuardHome / Mosdns / UU / DDNS
+      #   mwan3 / WireGuard / USB / Docker / Samba 等额外组件
+      # ============================================================
+      - name: Configure target
+        shell: bash
+        working-directory: immortalwrt
+        run: |
+          set -eux
+
+          cat > .config <<'EOF'
+          CONFIG_TARGET_ramips=y
+          CONFIG_TARGET_ramips_mt76x8=y
+          CONFIG_TARGET_ramips_mt76x8_DEVICE_xiaomi_mi-router-4a-100m=y
+
+          # LuCI：仅基础 Web 管理界面
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+
+          # 编译缓存
+          CONFIG_CCACHE=y
+          EOF
+
+          make defconfig
+
+          echo
+          echo "===== TARGET CONFIG ====="
+          grep -E \
+            'CONFIG_TARGET_ramips|CONFIG_TARGET_BOARD|CONFIG_TARGET_SUBTARGET|CONFIG_TARGET_PROFILE|CONFIG_PACKAGE_luci|CONFIG_PACKAGE_luci-i18n-base-zh-cn|CONFIG_CCACHE' \
+            .config || true
+
+      # ============================================================
+      # 7. 打印最终 diffconfig，便于以后完全复现
+      # ============================================================
+      - name: Save diffconfig
+        shell: bash
+        working-directory: immortalwrt
+        run: |
+          set -eux
+
+          ./scripts/diffconfig.sh > ../diffconfig-r4a-100m.txt
+
+          echo "===== diffconfig ====="
+          cat ../diffconfig-r4a-100m.txt
+
+      # ============================================================
+      # 8. 编译
+      # ============================================================
+      - name: Build firmware
+        shell: bash
+        working-directory: immortalwrt
+        env:
+          FORCE_UNSAFE_CONFIGURE: "1"
+        run: |
+          set -eux
+
+          make -j"$(nproc)" V=s
+
+      # ============================================================
+      # 9. 验证输出文件
+      # ============================================================
+      - name: Verify firmware
+        shell: bash
+        working-directory: immortalwrt
+        run: |
+          set -eux
+
+          OUT="bin/targets/ramips/mt76x8"
+
+          echo
+          echo "===== BUILD OUTPUT ====="
+          ls -lah "${OUT}"
+
+          FIRMWARE="$(find "${OUT}" -maxdepth 1 -type f \
+            -name '*xiaomi_mi-router-4a-100m*squashfs-sysupgrade.bin' \
+            | head -n 1)"
+
+          if [ -z "${FIRMWARE}" ]; then
+            echo "ERROR: 找不到 Xiaomi Mi Router 4A 100M sysupgrade 固件"
+            exit 1
+          fi
+
+          echo
+          echo "Firmware:"
+          echo "${FIRMWARE}"
+
+          echo
+          echo "Firmware size:"
+          stat -c '%s bytes' "${FIRMWARE}"
+
+          # 固件必须明显小于 16MB Flash
+          SIZE="$(stat -c '%s' "${FIRMWARE}")"
+
+          if [ "${SIZE}" -ge $((16 * 1024 * 1024)) ]; then
+            echo "ERROR: 固件超过 16MB Flash"
+            exit 1
+          fi
+
+          cp "${FIRMWARE}" \
+            ../immortalwrt-xiaomi-mi-router-4a-100m-squashfs-sysupgrade.bin
+
+          sha256sum \
+            ../immortalwrt-xiaomi-mi-router-4a-100m-squashfs-sysupgrade.bin \
+            > ../sha256sums-r4a-100m.txt
+
+          cp ../diffconfig-r4a-100m.txt .
+          cp ../sha256sums-r4a-100m.txt .
+
+          echo
+          echo "===== SHA256 ====="
+          cat ../sha256sums-r4a-100m.txt
+
+      # ============================================================
+      # 10. 上传最终固件
+      # ============================================================
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImmortalWrt-Xiaomi-Mi-Router-4A-100M
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            immortalwrt/../immortalwrt-xiaomi-mi-router-4a-100m-squashfs-sysupgrade.bin
+            immortalwrt/diffconfig-r4a-100m.txt
+            immortalwrt/sha256sums-r4a-100m.txt
+
+      # ============================================================
+      # 11. 输出摘要
+      # ============================================================
+      - name: Build summary
+        shell: bash
+        run: |
+          echo "=============================================="
+          echo " ImmortalWrt Xiaomi Mi Router 4A 100M"
+          echo "=============================================="
+          echo
+          echo "Source       : ImmortalWrt ${IMMORTALWRT_REF}"
+          echo "Target       : ramips / mt76x8"
+          echo "Device       : xiaomi_mi-router-4a-100m"
+          echo "Flash        : 16MB SPI-NOR"
+          echo
+          echo "Custom Flash:"
+          echo "  0x000000 - 0x030000  u-boot       192KB"
+          echo "  0x030000 - 0x040000  u-boot-env    64KB"
+          echo "  0x040000 - 0x050000  factory       64KB"
+          echo "  0x050000 - 0x1000000 firmware   16064KB"
+          echo
+          echo "Extra plugins: NONE"
+          echo "LuCI: basic only"
+          echo
+          echo "Build: SUCCESS"
