@@ -1,106 +1,33 @@
-name: Extract Single Firmware DTS Layout
+name: Inspect Firmware MTD & Strings
 on:
-  workflow_dispatch: # 允许手动在 Actions 页面点击触发
+  workflow_dispatch:
 
 jobs:
-  extract-dts:
+  inspect-fw:
     runs-on: ubuntu-latest
     steps:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y binwalk device-tree-compiler python3 xz-utils git
+          sudo apt-get install -y binwalk u-boot-tools binutils
 
       - name: Clone Target Repository
         uses: actions/checkout@v4
         with:
           repository: 'AshxL/router-r4a-100m'
           ref: 'main'
-          lfs: true # 固件大文件如果启用了 Git LFS，确保能正确拉取
+          lfs: true
           path: 'firmware-repo'
 
-      - name: Unpack Firmware
+      - name: Extract Firmware & Find MTD Layout
         run: |
           FW_FILE="firmware-repo/miwifi_r4ac_firmware_e9eec_2.18.58.bin"
           
-          if [ ! -f "$FW_FILE" ]; then
-            echo "❌ 未找到固件文件: $FW_FILE"
-            exit 1
-          fi
+          echo "=== 1. Binwalk 扫描固件结构 ==="
+          binwalk "$FW_FILE"
 
-          echo "📦 正在解包固件: $FW_FILE"
-          mkdir -p extracted_firmware
-          cp "$FW_FILE" extracted_firmware/
-          
-          cd extracted_firmware
-          binwalk -Me "$(basename "$FW_FILE")" > /dev/null 2>&1 || true
-          cd - > /dev/null
+          echo "=== 2. 搜索分区关键字（MTD 布局）==="
+          strings "$FW_FILE" | grep -E "mtdparts=|Bootloader|OS1|Factory|rootfs" | head -n 30 || true
 
-      - name: Carve DTB Files
-        run: |
-          cat << 'EOF' > carve_dtb.py
-          import os, struct
-
-          def extract_dtb(base_dir):
-              os.makedirs("dtbs", exist_ok=True)
-              dtb_count = 0
-              
-              for root, dirs, files in os.walk(base_dir):
-                  for file in files:
-                      filepath = os.path.join(root, file)
-                      if os.path.islink(filepath) or not os.path.isfile(filepath):
-                          continue
-                      
-                      try:
-                          with open(filepath, 'rb') as f:
-                              data = f.read()
-                          
-                          magic = b'\xd0\x0d\xfe\xed' # DTB Magic Number
-                          idx = 0
-                          while True:
-                              idx = data.find(magic, idx)
-                              if idx == -1:
-                                  break
-                              if idx + 8 <= len(data):
-                                  size = struct.unpack('>I', data[idx+4:idx+8])[0]
-                                  # DTB 正常大小通常在 1KB 到 2MB 之间
-                                  if 1024 < size < 2097152:
-                                      dtb_path = f"dtbs/r4ac_dtb_{dtb_count}.dtb"
-                                      with open(dtb_path, 'wb') as out_f:
-                                          out_f.write(data[idx:idx+size])
-                                      print(f"✅ 成功提取 DTB: {dtb_path} (大小: {size} 字节, 偏移: {hex(idx)})")
-                                      dtb_count += 1
-                              idx += 4
-                      except Exception:
-                          pass
-
-          extract_dtb("extracted_firmware")
-          EOF
-          python3 carve_dtb.py
-
-      - name: Decompile DTB to DTS and Display Flash Layout
-        run: |
-          mkdir -p dts_output
-          if [ -d "dtbs" ] && [ "$(ls -A dtbs)" ]; then
-            for dtb in dtbs/*.dtb; do
-              base=$(basename "$dtb" .dtb)
-              dts_file="dts_output/${base}.dts"
-              
-              echo "==================================================="
-              echo "🔄 正在反编译: $base.dtb -> $dts_file"
-              dtc -I dtb -O dts -o "$dts_file" "$dtb" 2>/dev/null || true
-              
-              echo "👉 [$base] 的闪存分区布局 (Flash Layout):"
-              grep -A 50 -B 2 -i "partitions" "$dts_file" || grep -A 30 -i "partition@" "$dts_file" || echo "  未在当前 DTB 中找到标准 partitions 节点。"
-            done
-            echo "==================================================="
-          else
-            echo "❌ 未能提取到 DTB 文件，请检查固件是否包含设备树或解包是否成功！"
-            exit 1
-          fi
-
-      - name: Upload DTS Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: r4ac-dts-output
-          path: dts_output/*.dts
+          echo "=== 3. 搜索内核版本信息 ==="
+          strings "$FW_FILE" | grep -i "Linux version" || true
