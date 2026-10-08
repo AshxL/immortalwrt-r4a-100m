@@ -58,7 +58,6 @@ jobs:
             genisoimage \
             git \
             g++-multilib \
-            lib32gcc-dev \
             libc6-dev-i386 \
             libelf-dev \
             libffi-dev \
