@@ -399,15 +399,6 @@ jobs:
           set_config CONFIG_FIRMWARE_INCLUDE_LANG_CN y
 
           # ------------------------------------------------------
-          # SSH
-          # Keep Dropbear, do not include OpenSSH.
-          # ------------------------------------------------------
-          set_config CONFIG_FIRMWARE_INCLUDE_DROPBEAR y
-          set_config CONFIG_FIRMWARE_INCLUDE_DROPBEAR_FAST_CODE n
-          set_config CONFIG_FIRMWARE_INCLUDE_OPENSSH n
-          set_config CONFIG_FIRMWARE_INCLUDE_DROPBEAR_ZLIB y
-
-          # ------------------------------------------------------
           # No USB
           # MI-4A 100M has no USB port.
           # ------------------------------------------------------
@@ -546,7 +537,7 @@ jobs:
           grep -Fx 'CONFIG_FIRMWARE_INCLUDE_SFE=y' "${DST}"
           grep -Fx 'CONFIG_FIRMWARE_INCLUDE_LANG_CN=y' "${DST}"
 
-          grep -Fx 'CONFIG_FIRMWARE_INCLUDE_DROPBEAR=y' "${DST}"
+          grep -Fx 'CONFIG_FIRMWARE_INCLUDE_DROPBEAR=n' "${DST}"
           grep -Fx 'CONFIG_FIRMWARE_INCLUDE_OPENSSH=n' "${DST}"
 
           grep -Fx 'CONFIG_FIRMWARE_WIFI2_DRIVER=4.1' "${DST}"
@@ -767,7 +758,7 @@ jobs:
           echo "=================================================="
 
       # ========================================================
-      # 12. Validate SSH / feature configuration
+      # 12. Validate feature configuration
       # ========================================================
       - name: Validate final firmware feature configuration
         shell: bash
@@ -777,17 +768,6 @@ jobs:
           cd rt-n56u
 
           CONFIG="trunk/configs/templates/MI-4A-100M.config"
-
-          # -----------------------------
-          # SSH
-          # -----------------------------
-          grep -Fx \
-            'CONFIG_FIRMWARE_INCLUDE_DROPBEAR=y' \
-            "${CONFIG}"
-
-          grep -Fx \
-            'CONFIG_FIRMWARE_INCLUDE_OPENSSH=n' \
-            "${CONFIG}"
 
           # -----------------------------
           # Basic features
@@ -901,14 +881,6 @@ jobs:
             echo
             echo "Firmware config:"
             echo "  trunk/configs/templates/MI-4A-100M.config"
-            echo
-            echo "SSH:"
-            grep '^CONFIG_FIRMWARE_INCLUDE_DROPBEAR=' \
-              trunk/configs/templates/MI-4A-100M.config
-            echo
-            echo "OpenSSH:"
-            grep '^CONFIG_FIRMWARE_INCLUDE_OPENSSH=' \
-              trunk/configs/templates/MI-4A-100M.config
             echo
             echo "IPv6:"
             grep '^CONFIG_FIRMWARE_ENABLE_IPV6=' \
